@@ -14,35 +14,75 @@ type MkekBootstrapResponse = {
 
 type Phase = 'idle' | 'bootstrapped' | 'unlocked' | 'error'
 
+const STORAGE_KEY = 'aether_drive_bootstrap_data'
+
+// Charge les données du bootstrap depuis localStorage au démarrage.
+function loadBootstrapData(): MkekBootstrapResponse | null {
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (stored) {
+    try {
+      return JSON.parse(stored) as MkekBootstrapResponse
+    } catch (e) {
+      console.error('Failed to parse stored bootstrap data:', e)
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }
+  return null
+}
+
 function App() {
   const [password, setPassword] = useState('')
-  const [phase, setPhase] = useState<Phase>('idle')
-  const [status, setStatus] = useState<string | null>(null)
-  const [bootstrapData, setBootstrapData] = useState<MkekBootstrapResponse | null>(null)
+  const initialBootstrapData = loadBootstrapData()
+  const [phase, setPhase] = useState<Phase>(initialBootstrapData ? 'bootstrapped' : 'idle')
+  const [status, setStatus] = useState<string | null>(
+    initialBootstrapData ? 'Données du coffre chargées. Tu peux déverrouiller avec ton mot de passe.' : null
+  )
+  const [bootstrapData, setBootstrapData] = useState<MkekBootstrapResponse | null>(initialBootstrapData)
 
   async function handleBootstrap() {
     setStatus(null)
     try {
       const result = await invoke<MkekBootstrapResponse>('crypto_bootstrap', { password })
       setBootstrapData(result)
+      // Sauvegarde les données du bootstrap dans localStorage pour la persistance.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(result))
       setPhase('bootstrapped')
       setStatus("Coffre initialisé localement (MKEK généré, rien n'a quitté Rust en clair).")
     } catch (e) {
       console.error(e)
       setPhase('error')
-      setStatus('Erreur lors du bootstrap cryptographique.')
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus(`Erreur lors du bootstrap cryptographique: ${errorMsg}`)
     }
   }
 
   async function handleUnlock() {
-    if (!bootstrapData) return
+    // Utilise bootstrapData du state ou charge depuis localStorage.
+    const dataToUse = bootstrapData || (() => {
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        try {
+          return JSON.parse(stored) as MkekBootstrapResponse
+        } catch {
+          return null
+        }
+      }
+      return null
+    })()
+
+    if (!dataToUse) {
+      setPhase('error')
+      setStatus('Aucune donnée de bootstrap trouvée. Initialise d\'abord le coffre.')
+      return
+    }
+
     setStatus(null)
     try {
       await invoke('crypto_unlock', {
         req: {
           password,
-          password_salt: bootstrapData.password_salt,
-          mkek: bootstrapData.mkek,
+          password_salt: dataToUse.password_salt,
+          mkek: dataToUse.mkek,
         },
       })
       setPhase('unlocked')
@@ -50,7 +90,8 @@ function App() {
     } catch (e) {
       console.error(e)
       setPhase('error')
-      setStatus('Échec du déverrouillage (mot de passe incorrect ou données corrompues).')
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus(`Échec du déverrouillage: ${errorMsg}`)
     }
   }
 
@@ -73,7 +114,7 @@ function App() {
           <button onClick={handleBootstrap} disabled={!password}>
             Initialiser le coffre (bootstrap)
           </button>
-          <button onClick={handleUnlock} disabled={!password || !bootstrapData}>
+          <button onClick={handleUnlock} disabled={!password}>
             Déverrouiller le coffre (unlock)
           </button>
         </div>

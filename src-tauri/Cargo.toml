@@ -32,3 +32,8 @@ rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 secrecy = "0.10"
 memsec = "0.7"
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
