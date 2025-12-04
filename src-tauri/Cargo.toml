@@ -26,9 +26,9 @@ tauri-plugin-log = "2"
 argon2 = { version = "0.5", default-features = false, features = ["std"] }
 hkdf = "0.12"
 sha2 = "0.10"
-chacha20poly1305 = { version = "0.10", features = ["xchacha20"] }
+chacha20poly1305 = "0.10"
 rand_core = "0.6"
 rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
-secrecy = "0.9"
-memsec = "0.8"
+secrecy = "0.10"
+memsec = "0.7"

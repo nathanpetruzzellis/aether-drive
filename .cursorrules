@@ -30,7 +30,8 @@ Tu as accès à des fichiers de contexte dans le dossier `.cursor/` que tu dois 
 ### Protocole de Validation & Non-Régression (OBLIGATOIRE)
 1.  **Avant toute modification :** Analyse l'impact potentiel. Assure-toi que le nouveau code ne casse pas une fonctionnalité existante.
 2.  **Fin de Phase / Étape Clé (Tests) :**
-    * Tu dois demander à l'utilisateur de tester non seulement la nouvelle fonctionnalité (Phase N), mais aussi de revérifier les fonctionnalités précédentes (Phase 1 à N-1).
+    * Tu dois demander à l'utilisateur de tester la nouvelle fonctionnalité (Phase N) ET de revérifier l'existant (Non-régression).
+    * **IMPÉRATIF : Fournis systématiquement le bloc de commande complet** pour lancer ces tests (ex: `npm run tauri dev`). Ne laisse jamais l'utilisateur chercher la commande dans l'historique.
     * **Règle d'Or :** Rien ne doit être endommagé au profit de la nouveauté. Si un test précédent échoue, la nouvelle étape est considérée comme échouée.
 3.  **Clôture d'Étape (Mise à jour & Sauvegarde) :**
     * Une fois que l'utilisateur confirme que les tests sont "OK", tu dois effectuer ces deux actions **simultanément** :

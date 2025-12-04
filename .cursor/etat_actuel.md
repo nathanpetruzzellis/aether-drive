@@ -8,8 +8,8 @@
 
 ## 2. État Technique
 * **Phase de Développement** : PHASE 1 — Crypto Core.
-* **Travail Effectué** : Dépôt configuré + stack Tauri (React + Rust) initialisée.
-* **Travail Restant (Prochaine Micro-Étape)** : Ajouter les dépendances Rust nécessaires au module Crypto Core selon la blueprint.
+* **Travail Effectué** : Dépôt configuré, stack Tauri (React + Rust) initialisée, dépendances crypto ajoutées et module `crypto` (Argon2id → MasterKey → FileKey) compilant.
+* **Travail Restant (Prochaine Micro-Étape)** : Implémenter le chiffrement MKEK (chiffrer/déchiffrer la Master Key) et la persistance sécurisée associée.
 
 ## 3. Non-Régression
 * Tests initiaux Tauri (dev server) validés.
