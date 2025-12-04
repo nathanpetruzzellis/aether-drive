@@ -4,6 +4,7 @@ pub mod storage;
 
 use crate::crypto::{CryptoCore, KeyHierarchy, MasterKey, MkekCiphertext, PasswordSecret};
 use crate::index::{sqlcipher::SqlCipherIndex, FileMetadata};
+use crate::storage::aether_format::AetherFile;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -299,6 +300,96 @@ fn index_get_file(
     }))
 }
 
+/// Obtient la MasterKey depuis l'état global (doit être déverrouillée).
+fn get_master_key_from_state(state: State<'_, AppState>) -> Result<MasterKey, String> {
+    let master_key_guard = state
+        .master_key
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+    let master_key = master_key_guard
+        .as_ref()
+        .ok_or_else(|| "MasterKey not available. Unlock the vault first.".to_string())?;
+    
+    // Clone la MasterKey pour l'utiliser
+    let master_key_bytes = master_key.as_bytes().to_vec();
+    Ok(crate::crypto::MasterKey::from_vec(master_key_bytes))
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileInfo {
+    pub uuid: Vec<u8>,
+    pub version: u8,
+    pub cipher_id: u8,
+    pub encrypted_size: usize,
+}
+
+#[tauri::command]
+fn storage_encrypt_file(
+    state: State<'_, AppState>,
+    data: Vec<u8>,
+    logical_path: String,
+) -> Result<Vec<u8>, String> {
+    log::info!(
+        "storage_encrypt_file called: logical_path={}, data_len={}",
+        logical_path,
+        data.len()
+    );
+    
+    let master_key = get_master_key_from_state(state)?;
+    
+    let aether_file = crate::storage::encrypt_file(&master_key, &data, &logical_path)
+        .map_err(|e| format!("Failed to encrypt file: {}", e))?;
+    
+    let serialized = aether_file.to_bytes();
+    log::info!(
+        "File encrypted successfully: serialized_size={}, uuid={:?}",
+        serialized.len(),
+        aether_file.header.uuid
+    );
+    
+    Ok(serialized)
+}
+
+#[tauri::command]
+fn storage_decrypt_file(
+    state: State<'_, AppState>,
+    encrypted_data: Vec<u8>,
+    logical_path: String,
+) -> Result<Vec<u8>, String> {
+    log::info!(
+        "storage_decrypt_file called: logical_path={}, encrypted_data_len={}",
+        logical_path,
+        encrypted_data.len()
+    );
+    
+    let master_key = get_master_key_from_state(state)?;
+    
+    let aether_file = AetherFile::from_bytes(&encrypted_data)
+        .map_err(|e| format!("Failed to parse Aether file: {}", e))?;
+    
+    let plaintext = crate::storage::decrypt_file(&master_key, &aether_file, &logical_path)
+        .map_err(|e| format!("Failed to decrypt file: {}", e))?;
+    
+    log::info!("File decrypted successfully: plaintext_len={}", plaintext.len());
+    
+    Ok(plaintext)
+}
+
+#[tauri::command]
+fn storage_get_file_info(encrypted_data: Vec<u8>) -> Result<FileInfo, String> {
+    log::info!("storage_get_file_info called: encrypted_data_len={}", encrypted_data.len());
+    
+    let aether_file = AetherFile::from_bytes(&encrypted_data)
+        .map_err(|e| format!("Failed to parse Aether file: {}", e))?;
+    
+    Ok(FileInfo {
+        uuid: aether_file.header.uuid.to_vec(),
+        version: aether_file.header.version,
+        cipher_id: aether_file.header.cipher_id,
+        encrypted_size: aether_file.ciphertext.len(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -313,7 +404,10 @@ pub fn run() {
             index_add_file,
             index_list_files,
             index_remove_file,
-            index_get_file
+            index_get_file,
+            storage_encrypt_file,
+            storage_decrypt_file,
+            storage_get_file_info
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
