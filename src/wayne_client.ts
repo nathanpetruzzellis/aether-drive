@@ -67,37 +67,64 @@ export class WayneClient {
     throw new Error(errorMessage)
   }
 
+  // Gère les erreurs réseau (DNS, SSL, timeout, etc.)
+  private handleNetworkError(error: unknown, operation: string): never {
+    if (error instanceof TypeError) {
+      // Erreur réseau (DNS, SSL, connexion refusée, etc.)
+      if (error.message.includes('fetch') || error.message.includes('Failed to fetch') || error.message.includes('Load failed')) {
+        throw new Error(
+          `Impossible de se connecter au serveur Wayne (${this.baseUrl}). ` +
+          `Vérifie que :\n` +
+          `1. L'URL est correcte\n` +
+          `2. Le serveur est accessible\n` +
+          `3. Le DNS est propagé (peut prendre jusqu'à 48h)\n` +
+          `4. Le certificat SSL est valide`
+        )
+      }
+    }
+    // Réutilise l'erreur originale si ce n'est pas une erreur réseau connue
+    throw error
+  }
+
   // Inscription d'un nouvel utilisateur.
   async register(request: RegisterRequest): Promise<RegisterResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/auth/register`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(request),
-    })
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(request),
+      })
 
-    if (!response.ok) {
-      await this.handleError(response)
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as RegisterResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'register')
     }
-
-    return (await response.json()) as RegisterResponse
   }
 
   // Connexion d'un utilisateur existant.
   async login(request: LoginRequest): Promise<LoginResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(request),
-    })
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(request),
+      })
 
-    if (!response.ok) {
-      await this.handleError(response)
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      const loginResponse = (await response.json()) as LoginResponse
+      // Stocke automatiquement le token après une connexion réussie
+      this.setAccessToken(loginResponse.access_token)
+      return loginResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'login')
     }
-
-    const loginResponse = (await response.json()) as LoginResponse
-    // Stocke automatiquement le token après une connexion réussie
-    this.setAccessToken(loginResponse.access_token)
-    return loginResponse
   }
 
   // Sauvegarde une enveloppe de clés (MKEK) sur Wayne.
@@ -106,19 +133,23 @@ export class WayneClient {
       throw new Error('Authentication required. Please login first.')
     }
 
-    const body: CreateKeyEnvelopeRequest = { envelope }
+    try {
+      const body: CreateKeyEnvelopeRequest = { envelope }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body),
-    })
+      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+      })
 
-    if (!response.ok) {
-      await this.handleError(response)
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as CreateKeyEnvelopeResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'saveKeyEnvelope')
     }
-
-    return (await response.json()) as CreateKeyEnvelopeResponse
   }
 
   // Récupère une enveloppe de clés (MKEK) depuis Wayne.
@@ -127,16 +158,20 @@ export class WayneClient {
       throw new Error('Authentication required. Please login first.')
     }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/${envelopeId}`, {
-      method: 'GET',
-      headers: this.getHeaders(),
-    })
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/${envelopeId}`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      })
 
-    if (!response.ok) {
-      await this.handleError(response)
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as GetKeyEnvelopeResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'getKeyEnvelope')
     }
-
-    return (await response.json()) as GetKeyEnvelopeResponse
   }
 
   // Récupère l'enveloppe de clés de l'utilisateur actuellement connecté.
@@ -145,16 +180,20 @@ export class WayneClient {
       throw new Error('Authentication required. Please login first.')
     }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/me`, {
-      method: 'GET',
-      headers: this.getHeaders(),
-    })
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/me`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      })
 
-    if (!response.ok) {
-      await this.handleError(response)
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as GetKeyEnvelopeResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'getMyKeyEnvelope')
     }
-
-    return (await response.json()) as GetKeyEnvelopeResponse
   }
 }
 
