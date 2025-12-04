@@ -246,6 +246,21 @@ function App() {
     }
   }
 
+  async function handleVerifyIntegrity() {
+    try {
+      const isValid = await invoke<boolean>('index_verify_integrity')
+      if (isValid) {
+        setStatus('✅ Intégrité de l\'index vérifiée : toutes les entrées sont valides.')
+      } else {
+        setStatus('❌ Intégrité de l\'index compromise : certaines entrées sont corrompues ou modifiées.')
+      }
+    } catch (e) {
+      console.error(e)
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus(`Erreur lors de la vérification d'intégrité: ${errorMsg}`)
+    }
+  }
+
   return (
     <div className="app">
       <h1>Aether Drive – Crypto Core (Local)</h1>
@@ -340,6 +355,14 @@ function App() {
               />
             </label>
             <button onClick={handleRemoveFile}>Supprimer de l'index</button>
+          </div>
+
+          <div className="section">
+            <h3>Vérification d'intégrité</h3>
+            <p style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
+              Vérifie l'intégrité globale de l'index en utilisant le Merkle Tree et les HMAC de chaque entrée.
+            </p>
+            <button onClick={handleVerifyIntegrity}>Vérifier l'intégrité de l'index</button>
           </div>
         </div>
       )}
