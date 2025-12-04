@@ -1,12 +1,16 @@
 use std::fmt;
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::aead;
 use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 use zeroize::Zeroizing;
+
+pub mod mkek;
+pub use mkek::MkekCiphertext;
 
 const KEK_LEN: usize = 32;
 const MASTER_KEY_LEN: usize = 32;
@@ -18,6 +22,7 @@ const FILE_KEY_INFO: &[u8] = b"aether-drive:file-key";
 pub enum CryptoError {
     InvalidPassword(String),
     HkdfLength,
+    Aead,
 }
 
 impl fmt::Display for CryptoError {
@@ -25,7 +30,13 @@ impl fmt::Display for CryptoError {
         match self {
             CryptoError::InvalidPassword(err) => write!(f, "argon2 failure: {err}"),
             CryptoError::HkdfLength => write!(f, "hkdf output length invalid"),
+            CryptoError::Aead => write!(f, "aead failure (xchacha20-poly1305)"),
         }
+    }
+}
+impl From<aead::Error> for CryptoError {
+    fn from(_: aead::Error) -> Self {
+        CryptoError::Aead
     }
 }
 
@@ -198,10 +209,11 @@ impl KeyHierarchy {
     pub fn restore(
         password: &PasswordSecret,
         salt: [u8; 16],
-        master_key: MasterKey,
+        mkek_ciphertext: &MkekCiphertext,
     ) -> Result<Self, CryptoError> {
         let core = CryptoCore::default();
         let kek = core.derive_kek(password, &salt)?;
+        let master_key = mkek::decrypt_master_key(&kek, mkek_ciphertext)?;
         Ok(Self {
             core,
             kek,
@@ -220,6 +232,10 @@ impl KeyHierarchy {
     pub fn derive_file_key(&self, file_salt: &[u8; 32]) -> Result<FileKey, CryptoError> {
         self.core.derive_file_key(&self.master_key, file_salt)
     }
+
+    pub fn seal_master_key(&self) -> Result<MkekCiphertext, CryptoError> {
+        mkek::encrypt_master_key(&self.kek, &self.master_key)
+    }
 }
 
 impl fmt::Debug for KeyHierarchy {
@@ -229,5 +245,63 @@ impl fmt::Debug for KeyHierarchy {
             .field("kek", &"<redacted>")
             .field("master_key", &"<redacted>")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_kek_is_deterministic_for_same_password_and_salt() {
+        let core = CryptoCore::default();
+        let password = PasswordSecret::new("test-password");
+        let salt = [7u8; 16];
+
+        let kek1 = core.derive_kek(&password, &salt).unwrap();
+        let kek2 = core.derive_kek(&password, &salt).unwrap();
+
+        assert_eq!(kek1.as_bytes(), kek2.as_bytes());
+    }
+
+    #[test]
+    fn derive_kek_changes_with_different_salt() {
+        let core = CryptoCore::default();
+        let password = PasswordSecret::new("test-password");
+        let salt1 = [1u8; 16];
+        let salt2 = [2u8; 16];
+
+        let kek1 = core.derive_kek(&password, &salt1).unwrap();
+        let kek2 = core.derive_kek(&password, &salt2).unwrap();
+
+        assert_ne!(kek1.as_bytes(), kek2.as_bytes());
+    }
+
+    #[test]
+    fn master_key_and_file_key_roundtrip() {
+        let core = CryptoCore::default();
+        let mk = core.generate_master_key();
+        let file_salt = core.random_file_salt();
+
+        let fk1 = core.derive_file_key(&mk, &file_salt).unwrap();
+        let fk2 = core.derive_file_key(&mk, &file_salt).unwrap();
+
+        assert_eq!(fk1.as_bytes(), fk2.as_bytes());
+    }
+
+    #[test]
+    fn key_hierarchy_bootstrap_and_seal_restore_roundtrip() {
+        let password = PasswordSecret::new("strong-passphrase");
+        let salt = [3u8; 16];
+
+        let hierarchy = KeyHierarchy::bootstrap(&password, salt).unwrap();
+        let mk_before = hierarchy.master_key().as_bytes().to_vec();
+
+        let mkek = hierarchy.seal_master_key().unwrap();
+
+        let restored = KeyHierarchy::restore(&password, salt, &mkek).unwrap();
+        let mk_after = restored.master_key().as_bytes().to_vec();
+
+        assert_eq!(mk_before, mk_after);
     }
 }

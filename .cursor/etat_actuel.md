@@ -8,8 +8,9 @@
 
 ## 2. État Technique
 * **Phase de Développement** : PHASE 1 — Crypto Core.
-* **Travail Effectué** : Dépôt configuré, stack Tauri (React + Rust) initialisée, dépendances crypto ajoutées et module `crypto` (Argon2id → MasterKey → FileKey) compilant.
-* **Travail Restant (Prochaine Micro-Étape)** : Implémenter le chiffrement MKEK (chiffrer/déchiffrer la Master Key) et la persistance sécurisée associée.
+* **Travail Effectué** : Dépôt configuré, stack Tauri (React + Rust) initialisée, dépendances crypto ajoutées, module `crypto` (Argon2id → MasterKey → FileKey → MKEK) implémenté et couvert par des tests unitaires.
+* **Travail Restant (Prochaine Micro-Étape)** : Intégrer les commandes crypto Tauri (`crypto_bootstrap`/`crypto_unlock`) dans le frontend React pour un flux local de création / déverrouillage de coffre.
 
 ## 3. Non-Régression
 * Tests initiaux Tauri (dev server) validés.
+* Tests unitaires Rust du Crypto Core (`cargo test`) validés.
