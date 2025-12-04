@@ -1,5 +1,6 @@
 pub mod crypto;
 pub mod index;
+pub mod storage;
 
 use crate::crypto::{CryptoCore, KeyHierarchy, MasterKey, MkekCiphertext, PasswordSecret};
 use crate::index::{sqlcipher::SqlCipherIndex, FileMetadata};

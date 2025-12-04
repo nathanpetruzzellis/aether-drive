@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn mkek_encrypt_decrypt_roundtrip() {
-        let core = CryptoCore::default();
+        let _core = CryptoCore::default();
         let password = PasswordSecret::new("mkek-test");
         let salt = [9u8; 16];
         let hierarchy = crate::crypto::KeyHierarchy::bootstrap(&password, salt).unwrap();

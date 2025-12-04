@@ -110,6 +110,10 @@ impl FileKey {
         Self(Zeroizing::new(buffer))
     }
 
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(Zeroizing::new(bytes.to_vec()))
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
