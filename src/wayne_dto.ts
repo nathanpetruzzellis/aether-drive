@@ -33,4 +33,47 @@ export interface CreateKeyEnvelopeResponse {
   envelope_id: string
 }
 
+// Requête de récupération d'une enveloppe de clés.
+export interface GetKeyEnvelopeRequest {
+  envelope_id: string
+}
+
+// Réponse contenant l'enveloppe de clés.
+export interface GetKeyEnvelopeResponse {
+  envelope: KeyEnvelopeDto
+}
+
+// Requête d'inscription d'un nouvel utilisateur.
+export interface RegisterRequest {
+  email: string
+  password: string
+}
+
+// Réponse d'inscription.
+export interface RegisterResponse {
+  user_id: string
+  message: string
+}
+
+// Requête de connexion.
+export interface LoginRequest {
+  email: string
+  password: string
+}
+
+// Réponse de connexion (contient le token d'authentification).
+export interface LoginResponse {
+  access_token: string
+  refresh_token: string
+  user_id: string
+  expires_in: number
+}
+
+// Réponse d'erreur standardisée de Wayne.
+export interface WayneErrorResponse {
+  error: string
+  message: string
+  code?: string
+}
+
 

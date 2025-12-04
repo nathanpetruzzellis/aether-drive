@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { WayneClient } from './wayne_client'
+import type { KeyEnvelopeDto } from './wayne_dto'
 import './App.css'
 
 type MkekCiphertext = {
-  nonce: number[]
+  nonce: number[] // [u8; 24] en Rust, converti en number[] par Tauri
   payload: number[]
 }
 
 type MkekBootstrapResponse = {
-  password_salt: number[]
+  password_salt: number[] // [u8; 16] en Rust, converti en number[] par Tauri
   mkek: MkekCiphertext
 }
 
@@ -58,6 +60,14 @@ function App() {
   const [decryptPath, setDecryptPath] = useState('')
   const [decryptedData, setDecryptedData] = useState<string | null>(null)
   
+  // États pour Wayne (Control Plane)
+  const [wayneBaseUrl, setWayneBaseUrl] = useState('https://wayne.example.com')
+  const [wayneEmail, setWayneEmail] = useState('')
+  const [waynePassword, setWaynePassword] = useState('')
+  const [wayneClient, setWayneClient] = useState<WayneClient | null>(null)
+  const [wayneEnvelopeId, setWayneEnvelopeId] = useState<string | null>(null)
+  const [useWayne, setUseWayne] = useState(false) // Toggle pour activer/désactiver Wayne
+
   // États pour Storj
   const [storjAccessKey, setStorjAccessKey] = useState('')
   const [storjSecretKey, setStorjSecretKey] = useState('')
@@ -73,10 +83,49 @@ function App() {
     try {
       const result = await invoke<MkekBootstrapResponse>('crypto_bootstrap', { password })
       setBootstrapData(result)
-      // Sauvegarde les données du bootstrap dans localStorage pour la persistance.
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(result))
+
+      // Si Wayne est activé, sauvegarde le MKEK sur Wayne
+      if (useWayne && wayneClient) {
+        // Vérifie que l'utilisateur est authentifié (a un token d'accès)
+        const hasToken = wayneClient.getAccessToken() !== null
+        if (!hasToken) {
+          setStatus(`⚠️ Coffre initialisé localement mais échec de sauvegarde sur Wayne: Tu dois d'abord te connecter à Wayne. Les données sont sauvegardées localement.`)
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(result))
+        } else {
+          try {
+            // Convertit le MKEK en format DTO pour Wayne
+            // Les tableaux Rust [u8; N] sont déjà convertis en number[] par Tauri
+            const envelope: KeyEnvelopeDto = {
+              version: 1,
+              password_salt: result.password_salt,
+              mkek: {
+                nonce: result.mkek.nonce,
+                payload: result.mkek.payload,
+              },
+            }
+
+            const saveResponse = await wayneClient.saveKeyEnvelope(envelope)
+            setWayneEnvelopeId(saveResponse.envelope_id)
+            
+            // Sauvegarde aussi l'envelope_id dans localStorage pour référence
+            localStorage.setItem('wayne_envelope_id', saveResponse.envelope_id)
+            
+            setStatus(`✅ Coffre initialisé et MKEK sauvegardé sur Wayne (ID: ${saveResponse.envelope_id}).`)
+          } catch (wayneError) {
+            console.error('Wayne save error:', wayneError)
+            const wayneErrorMsg = wayneError instanceof Error ? wayneError.message : String(wayneError)
+            setStatus(`⚠️ Coffre initialisé localement mais échec de sauvegarde sur Wayne: ${wayneErrorMsg}. Les données sont sauvegardées localement.`)
+            // Fallback : sauvegarde locale si Wayne échoue
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(result))
+          }
+        }
+      } else {
+        // Mode local uniquement (fallback)
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(result))
+        setStatus("✅ Coffre initialisé localement (MKEK généré, rien n'a quitté Rust en clair).")
+      }
+
       setPhase('bootstrapped')
-      setStatus("Coffre initialisé localement (MKEK généré, rien n'a quitté Rust en clair).")
     } catch (e) {
       console.error(e)
       setPhase('error')
@@ -86,7 +135,45 @@ function App() {
   }
 
   async function handleUnlock() {
-    // Utilise bootstrapData du state ou charge depuis localStorage.
+    setStatus(null)
+    
+    // Si Wayne est activé, récupère le MKEK depuis Wayne
+    if (useWayne && wayneClient) {
+      try {
+        // Utilise getMyKeyEnvelope pour récupérer l'enveloppe de l'utilisateur connecté
+        const wayneResponse = await wayneClient.getMyKeyEnvelope()
+        const envelope = wayneResponse.envelope
+
+        // Convertit le DTO Wayne en format Rust
+        // Tauri convertit automatiquement number[] en [u8; N] côté Rust
+        const mkekData: MkekBootstrapResponse = {
+          password_salt: envelope.password_salt,
+          mkek: {
+            nonce: envelope.mkek.nonce,
+            payload: envelope.mkek.payload,
+          },
+        }
+
+        await invoke('crypto_unlock', {
+          req: {
+            password,
+            password_salt: mkekData.password_salt,
+            mkek: mkekData.mkek,
+          },
+        })
+        setPhase('unlocked')
+        setStatus('✅ Coffre déverrouillé depuis Wayne (MasterKey disponible uniquement côté Rust).')
+        await handleListFiles()
+        return
+      } catch (wayneError) {
+        console.error('Wayne unlock error:', wayneError)
+        const wayneErrorMsg = wayneError instanceof Error ? wayneError.message : String(wayneError)
+        setStatus(`⚠️ Échec de récupération depuis Wayne: ${wayneErrorMsg}. Tentative avec données locales...`)
+        // Fallback : essaie avec les données locales
+      }
+    }
+
+    // Mode local (fallback ou mode par défaut)
     const dataToUse = bootstrapData || (() => {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (stored) {
@@ -105,7 +192,6 @@ function App() {
       return
     }
 
-    setStatus(null)
     try {
       await invoke('crypto_unlock', {
         req: {
@@ -115,8 +201,7 @@ function App() {
         },
       })
       setPhase('unlocked')
-      setStatus('Coffre déverrouillé en mémoire (MasterKey disponible uniquement côté Rust).')
-      // Charge la liste des fichiers après déverrouillage.
+      setStatus('✅ Coffre déverrouillé en mémoire (MasterKey disponible uniquement côté Rust).')
       await handleListFiles()
     } catch (e) {
       console.error(e)
@@ -365,6 +450,65 @@ function App() {
     }
   }
 
+  async function handleWayneRegister() {
+    setStatus(null)
+    if (!wayneEmail || !waynePassword || !wayneBaseUrl) {
+      setStatus('Email, mot de passe et URL Wayne requis pour l\'inscription.')
+      return
+    }
+    try {
+      const client = new WayneClient({ baseUrl: wayneBaseUrl })
+      const response = await client.register({
+        email: wayneEmail,
+        password: waynePassword,
+      })
+      setWayneClient(client)
+      setUseWayne(true)
+      setStatus(`✅ Compte créé avec succès (User ID: ${response.user_id}). Tu peux maintenant te connecter.`)
+    } catch (e) {
+      console.error(e)
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus(`❌ Erreur lors de l'inscription: ${errorMsg}`)
+    }
+  }
+
+  async function handleWayneLogin() {
+    setStatus(null)
+    if (!wayneEmail || !waynePassword || !wayneBaseUrl) {
+      setStatus('Email, mot de passe et URL Wayne requis pour la connexion.')
+      return
+    }
+    try {
+      const client = new WayneClient({ baseUrl: wayneBaseUrl })
+      const response = await client.login({
+        email: wayneEmail,
+        password: waynePassword,
+      })
+      setWayneClient(client)
+      setUseWayne(true)
+      
+      // Essaie de récupérer l'enveloppe de clés existante
+      try {
+        await client.getMyKeyEnvelope()
+        // L'ID de l'enveloppe est stocké dans localStorage après le bootstrap
+        const storedEnvelopeId = localStorage.getItem('wayne_envelope_id')
+        if (storedEnvelopeId) {
+          setWayneEnvelopeId(storedEnvelopeId)
+          setStatus(`✅ Connexion réussie. Enveloppe de clés trouvée (ID: ${storedEnvelopeId}).`)
+        } else {
+          setStatus(`✅ Connexion réussie (User ID: ${response.user_id}). Aucune enveloppe de clés trouvée - initialise un nouveau coffre.`)
+        }
+      } catch (envelopeError) {
+        // Pas d'enveloppe existante, c'est normal pour un nouveau compte
+        setStatus(`✅ Connexion réussie (User ID: ${response.user_id}). Aucune enveloppe de clés trouvée - initialise un nouveau coffre.`)
+      }
+    } catch (e) {
+      console.error(e)
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus(`❌ Erreur lors de la connexion: ${errorMsg}`)
+    }
+  }
+
   async function handleStorjDelete() {
     setStatus(null)
     if (!downloadFileUuid) {
@@ -393,9 +537,120 @@ function App() {
 
   return (
     <div className="app">
-      <h1>Aether Drive – Crypto Core (Local)</h1>
+      <h1>Aether Drive – Crypto Core</h1>
+
+      {/* Section Wayne (Control Plane) */}
+      <div className="card">
+        <h2>Intégration Wayne (Control Plane)</h2>
+        <p style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
+          Wayne est le serveur central qui gère l'authentification et stocke le MKEK (Master Key Encryption Key).
+          Optionnel : tu peux utiliser le mode local uniquement.
+        </p>
+        
+        <div className="section">
+          <label>
+            <input
+              type="checkbox"
+              checked={useWayne}
+              onChange={(e) => {
+                setUseWayne(e.target.checked)
+                if (!e.target.checked) {
+                  setWayneClient(null)
+                  setStatus('Mode local activé. Le MKEK sera stocké localement.')
+                }
+              }}
+            />
+            <span style={{ marginLeft: '0.5rem' }}>Utiliser Wayne (recommandé pour production)</span>
+          </label>
+        </div>
+
+        {useWayne && (
+          <>
+            <div className="section">
+              <h3>Configuration Wayne</h3>
+              <label>
+                URL du serveur Wayne
+                <input
+                  type="text"
+                  value={wayneBaseUrl}
+                  onChange={(e) => setWayneBaseUrl(e.target.value)}
+                  placeholder="ex: https://wayne.example.com"
+                  disabled={!!wayneClient}
+                />
+              </label>
+            </div>
+
+            {(!wayneClient || (wayneClient && !wayneClient.getAccessToken())) && (
+              <div className="section">
+                <h3>Authentification</h3>
+                {wayneClient && !wayneClient.getAccessToken() && (
+                  <p style={{ color: '#ff9800', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+                    ⚠️ Compte créé mais non connecté. Connecte-toi pour sauvegarder le MKEK sur Wayne.
+                  </p>
+                )}
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    value={wayneEmail}
+                    onChange={(e) => setWayneEmail(e.target.value)}
+                    placeholder="ex: user@example.com"
+                    disabled={!!wayneClient}
+                  />
+                </label>
+                <label>
+                  Mot de passe
+                  <input
+                    type="password"
+                    value={waynePassword}
+                    onChange={(e) => setWaynePassword(e.target.value)}
+                    placeholder="Mot de passe pour Wayne"
+                  />
+                </label>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  {!wayneClient && (
+                    <button onClick={handleWayneRegister} disabled={!wayneEmail || !waynePassword || !wayneBaseUrl}>
+                      S'inscrire
+                    </button>
+                  )}
+                  <button onClick={handleWayneLogin} disabled={!wayneEmail || !waynePassword || !wayneBaseUrl}>
+                    Se connecter
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {wayneClient && wayneClient.getAccessToken() && (
+              <div className="section">
+                <p style={{ color: '#4caf50', fontSize: '0.9rem' }}>
+                  ✅ Connecté à Wayne ({wayneBaseUrl})
+                </p>
+                {wayneEnvelopeId && (
+                  <p style={{ fontSize: '0.85rem', color: '#666' }}>
+                    Enveloppe de clés : {wayneEnvelopeId}
+                  </p>
+                )}
+                <button
+                  onClick={() => {
+                    wayneClient.clearAccessToken()
+                    setWayneClient(null)
+                    setUseWayne(false)
+                    setWayneEnvelopeId(null)
+                    localStorage.removeItem('wayne_envelope_id')
+                    setStatus('Déconnecté de Wayne. Mode local activé.')
+                  }}
+                  style={{ marginTop: '0.5rem' }}
+                >
+                  Se déconnecter
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="card">
+        <h2>Gestion du coffre</h2>
         <label>
           Mot de passe maître
           <input
@@ -407,7 +662,7 @@ function App() {
         </label>
 
         <div className="actions">
-          <button onClick={handleBootstrap} disabled={!password}>
+          <button onClick={handleBootstrap} disabled={!password || (useWayne && (!wayneClient || !wayneClient.getAccessToken()))}>
             Initialiser le coffre (bootstrap)
           </button>
           <button onClick={handleUnlock} disabled={!password}>
