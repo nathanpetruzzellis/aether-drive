@@ -300,6 +300,18 @@ fn index_get_file(
     }))
 }
 
+#[tauri::command]
+fn index_verify_integrity(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let index = open_index_with_state(&app, state)?;
+    let is_valid = index
+        .verify_integrity()
+        .map_err(|e| format!("Failed to verify index integrity: {}", e))?;
+    Ok(is_valid)
+}
+
 /// Obtient la MasterKey depuis l'état global (doit être déverrouillée).
 fn get_master_key_from_state(state: State<'_, AppState>) -> Result<MasterKey, String> {
     let master_key_guard = state
@@ -405,6 +417,7 @@ pub fn run() {
             index_list_files,
             index_remove_file,
             index_get_file,
+            index_verify_integrity,
             storage_encrypt_file,
             storage_decrypt_file,
             storage_get_file_info

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 pub mod sqlcipher;
+pub mod merkle;
 
 /// Identifiant logique d'un fichier dans l'index local.
 pub type FileId = String;
