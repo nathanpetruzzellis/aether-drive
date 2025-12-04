@@ -61,7 +61,7 @@ function App() {
   const [decryptedData, setDecryptedData] = useState<string | null>(null)
   
   // États pour Wayne (Control Plane)
-  const [wayneBaseUrl, setWayneBaseUrl] = useState('https://wayne.example.com')
+  const [wayneBaseUrl, setWayneBaseUrl] = useState('https://eather.io')
   const [wayneEmail, setWayneEmail] = useState('')
   const [waynePassword, setWaynePassword] = useState('')
   const [wayneClient, setWayneClient] = useState<WayneClient | null>(null)
@@ -574,7 +574,7 @@ function App() {
                   type="text"
                   value={wayneBaseUrl}
                   onChange={(e) => setWayneBaseUrl(e.target.value)}
-                  placeholder="ex: https://wayne.example.com"
+                  placeholder="ex: https://eather.io"
                   disabled={!!wayneClient}
                 />
               </label>
