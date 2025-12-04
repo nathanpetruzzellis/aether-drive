@@ -8,8 +8,8 @@
 
 ## 2. État Technique
 * **Phase de Développement** : PHASE 1 — Crypto Core.
-* **Travail Effectué** : Dépôt configuré, stack Tauri (React + Rust) initialisée, dépendances crypto ajoutées, module `crypto` (Argon2id → MasterKey → FileKey → MKEK) implémenté et couvert par des tests unitaires, commandes Tauri exposées et flux React local (bootstrap/unlock) opérationnel avec persistance des données du bootstrap via localStorage, contrat d’API Wayne défini (DTO + client HTTP minimal), squelette d’index local (module `index` en mémoire) ajouté côté Rust, module SQLCipher implémenté (`SqlCipherIndex`) avec dérivation de clé via HKDF depuis la MasterKey et tests unitaires validés, intégration SQLCipher dans le flux applicatif terminée (base créée/ouverte automatiquement lors du bootstrap/unlock dans le répertoire de données de l’app), persistance des données du bootstrap implémentée (localStorage) permettant le déverrouillage après redémarrage de l’app.
-* **Travail Restant (Prochaine Micro-Étape)** : Exposer des commandes Tauri pour manipuler l’index (ajouter/lister/supprimer des fichiers) et préparer l’intégration avec le stockage Storj pour la Phase 2.
+* **Travail Effectué** : Dépôt configuré, stack Tauri (React + Rust) initialisée, dépendances crypto ajoutées, module `crypto` (Argon2id → MasterKey → FileKey → MKEK) implémenté et couvert par des tests unitaires, commandes Tauri exposées et flux React local (bootstrap/unlock) opérationnel avec persistance des données du bootstrap via localStorage, contrat d'API Wayne défini (DTO + client HTTP minimal), module SQLCipher implémenté (`SqlCipherIndex`) avec dérivation de clé via HKDF depuis la MasterKey et tests unitaires validés, intégration SQLCipher dans le flux applicatif terminée (base créée/ouverte automatiquement lors du bootstrap/unlock dans le répertoire de données de l'app), persistance des données du bootstrap implémentée (localStorage) permettant le déverrouillage après redémarrage de l'app, commandes Tauri pour manipuler l'index implémentées et testées (`index_add_file`, `index_list_files`, `index_remove_file`, `index_get_file`) avec interface React fonctionnelle permettant l'ajout, la liste et la suppression de fichiers dans l'index SQLCipher.
+* **Travail Restant (Prochaine Micro-Étape)** : Implémenter le format de fichier "Aether" (en-tête binaire avec Magic Number, Version, Cipher ID, Header Content) et préparer l'intégration avec le stockage Storj pour la Phase 2.
 
 ## 3. Non-Régression
 * Tests initiaux Tauri (dev server) validés.
@@ -17,3 +17,4 @@
 * Flux UI local (bootstrap/unlock) testé manuellement avec succès.
 * Tests unitaires SQLCipher (`cargo test sqlcipher_index`) validés.
 * Persistance des données du bootstrap et déverrouillage après redémarrage validés.
+* Commandes d'index (ajout/liste/suppression) testées manuellement avec succès.

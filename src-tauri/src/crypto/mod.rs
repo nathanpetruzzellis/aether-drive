@@ -87,7 +87,7 @@ impl fmt::Debug for Kek {
 pub struct MasterKey(Zeroizing<Vec<u8>>);
 
 impl MasterKey {
-    fn from_vec(buffer: Vec<u8>) -> Self {
+    pub(crate) fn from_vec(buffer: Vec<u8>) -> Self {
         Self(Zeroizing::new(buffer))
     }
 
