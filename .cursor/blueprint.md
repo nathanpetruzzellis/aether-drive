@@ -1,7 +1,8 @@
 # Aether Drive V1 : Spécifications Produit & Architecture (Blueprint)
 
 ## 1. Philosophie & Architecture
-* **Vision** : Stockage souverain "Zero-Knowledge" et "Local-First". L'opérateur est techniquement aveugle.
+* **Vision** : Stockage souverain "Zero-Knowledge" et "Local-First". L'opérateur est techniquement aveugle. Assurer un socle de sécurité maximal
+conforme au triptyque Sécurité – Vitesse – Simplicité.
 * **Architecture Duale** : 
     * **"Wayne" (Control Plane)** : Serveur central (Islande). Gère l'auth, la facturation, les métadonnées anonymisées. Considéré "Non Fiable" pour les données.
     * **"Batman" (Data Plane)** : Client local + Stockage Storj. Lieu unique où les clés existent en clair (RAM volatile)[cite: 32].

@@ -1,0 +1,97 @@
+.unlock-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 2rem;
+}
+
+.unlock-container {
+  width: 100%;
+  max-width: 480px;
+}
+
+.unlock-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  color: white;
+}
+
+.unlock-header h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem 0;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.unlock-subtitle {
+  font-size: 1.1rem;
+  opacity: 0.9;
+  margin: 0;
+}
+
+.unlock-mode-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  background: #f0f0f0;
+  padding: 0.25rem;
+  border-radius: 8px;
+}
+
+.toggle-btn {
+  flex: 1;
+  padding: 0.75rem;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #666;
+}
+
+.toggle-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.toggle-btn.active {
+  background: white;
+  color: #646cff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.unlock-actions {
+  margin-top: 1rem;
+}
+
+.unlock-footer {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.9rem;
+  margin-top: 1.5rem;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .unlock-mode-toggle {
+    background: #333;
+  }
+
+  .toggle-btn {
+    color: #999;
+  }
+
+  .toggle-btn.active {
+    background: #2a2a2a;
+    color: #646cff;
+  }
+}
+

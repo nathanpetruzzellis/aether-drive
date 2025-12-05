@@ -8,6 +8,8 @@ import type {
   RegisterRequest,
   RegisterResponse,
   WayneErrorResponse,
+  StorjConfigDto,
+  CreateStorjBucketResponse,
 } from './wayne_dto'
 
 // Client HTTP pour communiquer avec le Control Plane "Wayne".
@@ -193,6 +195,50 @@ export class WayneClient {
       return (await response.json()) as GetKeyEnvelopeResponse
     } catch (error) {
       this.handleNetworkError(error, 'getMyKeyEnvelope')
+    }
+  }
+
+  // Récupère la configuration Storj de l'utilisateur actuellement connecté.
+  async getMyStorjConfig(): Promise<StorjConfigDto> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/storj-config/me`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      })
+
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as StorjConfigDto
+    } catch (error) {
+      this.handleNetworkError(error, 'getMyStorjConfig')
+    }
+  }
+
+  // Crée un bucket Storj pour l'utilisateur actuellement connecté (généralement appelé automatiquement lors de l'inscription).
+  async createStorjBucket(): Promise<CreateStorjBucketResponse> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/storj-config/create`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+      })
+
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      return (await response.json()) as CreateStorjBucketResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'createStorjBucket')
     }
   }
 }

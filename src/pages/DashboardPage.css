@@ -1,0 +1,279 @@
+.dashboard-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding: 2rem;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.dashboard-header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0;
+  color: #1a1a1a;
+}
+
+.dashboard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.dashboard-section {
+  margin-bottom: 2rem;
+}
+
+.dashboard-section:last-child {
+  margin-bottom: 0;
+}
+
+.dashboard-section h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+  color: #333;
+}
+
+.dashboard-section h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: #333;
+}
+
+.section-description {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.file-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.file-list li {
+  padding: 0.75rem;
+  background: #f9f9f9;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  color: #999;
+  font-style: italic;
+  margin: 1rem 0;
+}
+
+.textarea {
+  width: 100%;
+  padding: 0.75rem;
+  font-size: 1rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-family: monospace;
+  resize: vertical;
+  transition: border-color 0.2s;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: #646cff;
+  box-shadow: 0 0 0 3px rgba(100, 108, 255, 0.1);
+}
+
+.textarea:disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.info-box {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #bbdefb;
+  border-radius: 8px;
+  border: 2px solid #2196f3;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.info-box h4 {
+  color: #0d47a1;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+}
+
+.info-box p {
+  color: #0d47a1;
+  margin: 0.5rem 0;
+}
+
+.info-box ul {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+  color: #0d47a1;
+}
+
+.info-box li {
+  margin-bottom: 0.25rem;
+  color: #0d47a1;
+}
+
+.info-box strong {
+  color: #0d47a1;
+  font-weight: 600;
+}
+
+.success-box {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #c8e6c9;
+  border-radius: 8px;
+  border: 2px solid #4caf50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.success-box h4 {
+  color: #1b5e20;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+}
+
+.decrypted-data {
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 0.9rem;
+  background: white;
+  padding: 0.75rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.storj-file-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.storj-file-item {
+  margin-bottom: 0.75rem;
+  padding: 1rem;
+  background: #f9f9f9;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.storj-file-uuid {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.storj-file-path {
+  margin-bottom: 0.5rem;
+}
+
+.storj-file-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.storj-file-warning {
+  color: #999;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dashboard-page {
+    background: #1a1a1a;
+  }
+
+  .dashboard-header h1 {
+    color: #f0f0f0;
+  }
+
+  .dashboard-section h3,
+  .dashboard-section h4 {
+    color: #f0f0f0;
+  }
+
+  .section-description {
+    color: #999;
+  }
+
+  .file-list li {
+    background: #2a2a2a;
+    color: #e0e0e0;
+  }
+
+  .empty-state {
+    color: #666;
+  }
+
+  .textarea {
+    background: #2a2a2a;
+    border-color: #444;
+    color: #f0f0f0;
+  }
+
+  .textarea:focus {
+    border-color: #646cff;
+  }
+
+  .textarea:disabled {
+    background-color: #1a1a1a;
+  }
+
+  .storj-file-item {
+    background: #2a2a2a;
+    border-color: #444;
+  }
+
+  .storj-file-uuid {
+    color: #999;
+  }
+
+  .decrypted-data {
+    background: #2a2a2a;
+    color: #f0f0f0;
+  }
+
+  .info-box {
+    background: #0d47a1;
+    border-color: #2196f3;
+  }
+
+  .info-box h4,
+  .info-box p,
+  .info-box ul,
+  .info-box li,
+  .info-box strong {
+    color: #bbdefb;
+  }
+
+  .success-box {
+    background: #1b5e20;
+    border-color: #4caf50;
+  }
+
+  .success-box h4 {
+    color: #c8e6c9;
+  }
+}
+

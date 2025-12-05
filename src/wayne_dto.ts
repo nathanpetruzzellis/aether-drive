@@ -76,4 +76,21 @@ export interface WayneErrorResponse {
   code?: string
 }
 
+// Configuration Storj (gérée automatiquement par Wayne).
+export interface StorjConfigDto {
+  bucket_id: string
+  bucket_name: string
+  access_key_id: string
+  secret_access_key: string
+  endpoint: string
+}
+
+// Réponse de création de bucket Storj.
+export interface CreateStorjBucketResponse {
+  bucket_id: string
+  bucket_name: string
+  endpoint: string
+  message: string
+}
+
 

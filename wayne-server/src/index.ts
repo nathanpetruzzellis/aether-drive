@@ -3,11 +3,14 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import path from 'path';
 import { testConnection } from './db/connection';
 import authRoutes from './routes/auth';
 import keyEnvelopesRoutes from './routes/keyEnvelopes';
+import storjRoutes from './routes/storj';
 
-dotenv.config();
+// Charge le fichier .env depuis le répertoire du projet
+dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,6 +47,7 @@ app.get('/health', async (req: Request, res: Response) => {
 // Routes API
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/key-envelopes', keyEnvelopesRoutes);
+app.use('/api/v1/storj-config', storjRoutes);
 
 // Route 404
 app.use((req: Request, res: Response) => {
@@ -80,6 +84,7 @@ async function startServer() {
       console.log(`📡 Health check: http://localhost:${PORT}/health`);
       console.log(`🔐 API Auth: http://localhost:${PORT}/api/v1/auth`);
       console.log(`🔑 API Key Envelopes: http://localhost:${PORT}/api/v1/key-envelopes`);
+      console.log(`☁️ API Storj Config: http://localhost:${PORT}/api/v1/storj-config`);
     });
   } catch (error) {
     console.error('❌ Erreur lors du démarrage du serveur:', error);

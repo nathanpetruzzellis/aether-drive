@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { pool } from './connection';
 
@@ -8,16 +8,24 @@ async function runMigration() {
   try {
     console.log('🔄 Exécution des migrations...');
     
-    // Lit le fichier de migration
-    const migrationPath = join(__dirname, '../../migrations/001_initial_schema.sql');
-    const migrationSQL = readFileSync(migrationPath, 'utf-8');
+    // Lit tous les fichiers de migration dans l'ordre
+    const migrationsDir = join(__dirname, '../../migrations');
+    const migrationFiles = readdirSync(migrationsDir)
+      .filter(file => file.endsWith('.sql'))
+      .sort(); // Exécute dans l'ordre alphabétique (001, 002, etc.)
     
-    // Exécute la migration
     await client.query('BEGIN');
-    await client.query(migrationSQL);
+    
+    for (const file of migrationFiles) {
+      console.log(`📝 Exécution de la migration: ${file}`);
+      const migrationPath = join(migrationsDir, file);
+      const migrationSQL = readFileSync(migrationPath, 'utf-8');
+      await client.query(migrationSQL);
+    }
+    
     await client.query('COMMIT');
     
-    console.log('✅ Migration exécutée avec succès');
+    console.log('✅ Migrations exécutées avec succès');
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur lors de la migration:', error);
