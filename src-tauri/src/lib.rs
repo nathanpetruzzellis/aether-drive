@@ -1283,7 +1283,6 @@ async fn storj_delete_file(
     }
     
     let uuid_hex = hex::encode(&file_uuid);
-    let object_key = format!("{}", uuid_hex);
     let file_id = uuid_hex.clone();
     
     // Déplace vers la corbeille au lieu de supprimer définitivement
@@ -1461,6 +1460,57 @@ async fn storj_download_file_by_path(
     
     log::info!("File downloaded successfully from Storj via index lookup: logical_path={}", logical_path);
     Ok(data)
+}
+
+/// Télécharge et déchiffre un fichier pour l'aperçu (retourne les données déchiffrées en mémoire)
+#[tauri::command]
+async fn preview_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    file_id: String,
+) -> Result<Vec<u8>, String> {
+    log::info!("preview_file called: file_id={}", file_id);
+    
+    // Récupère les métadonnées du fichier depuis l'index local
+    let (logical_path, file_uuid_bytes) = {
+        let index = open_index_with_state(&app, &state)?;
+        let metadata = index.get(&file_id)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?
+            .ok_or_else(|| format!("File not found in index: {}", file_id))?;
+        
+        // Convertit le file_id (UUID hex) en bytes pour le download Storj
+        let file_uuid = hex::decode(&file_id)
+            .map_err(|e| format!("Invalid UUID format: {}", e))?;
+        
+        if file_uuid.len() != 16 {
+            return Err(format!("Invalid UUID length: expected 16 bytes, got {}", file_uuid.len()));
+        }
+        
+        (metadata.logical_path, file_uuid)
+    };
+    
+    // Télécharge le fichier chiffré depuis Storj
+    let client = {
+        let client_guard = state.storj_client.lock().await;
+        client_guard.clone()
+            .ok_or_else(|| "Storj client not configured. Call storj_configure first.".to_string())?
+    };
+    
+    let uuid_hex = hex::encode(&file_uuid_bytes);
+    let object_key = format!("{}", uuid_hex);
+    
+    let encrypted_data = client.download_file(&object_key)
+        .await
+        .map_err(|e| format!("Failed to download file from Storj: {}", e))?;
+    
+    log::info!("File downloaded from Storj for preview: size={}", encrypted_data.len());
+    
+    // Déchiffre le fichier
+    let plaintext = storage_decrypt_file(state.clone(), encrypted_data, logical_path)
+        .map_err(|e| format!("Failed to decrypt file for preview: {}", e))?;
+    
+    log::info!("File decrypted successfully for preview: size={}", plaintext.len());
+    Ok(plaintext)
 }
 
 /// Liste tous les fichiers dans la corbeille
@@ -1644,6 +1694,7 @@ pub fn run() {
             restore_from_trash,
             permanently_delete_from_trash,
             empty_trash,
+            preview_file,
             select_and_read_file,
             select_and_read_file_from_path,
             save_decrypted_file

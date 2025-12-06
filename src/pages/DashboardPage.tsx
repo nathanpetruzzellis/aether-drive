@@ -59,6 +59,10 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: FileInfo } | null>(null)
   const [showTrash, setShowTrash] = useState(false)
   const [trashItems, setTrashItems] = useState<Array<{ id: string; logical_path: string; encrypted_size: number; deleted_at: number }>>([])
+  const [showPreview, setShowPreview] = useState(false)
+  const [previewFile, setPreviewFile] = useState<FileInfo | null>(null)
+  const [previewData, setPreviewData] = useState<{ data: Uint8Array; type: 'image' | 'text' | 'pdf' | 'unsupported' } | null>(null)
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
 
   // Ferme le menu contextuel avec la touche Escape
   useEffect(() => {
@@ -424,6 +428,70 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       setStatus({ type: 'error', message: `Erreur lors du vidage de la corbeille: ${errorMsg}` })
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  // Ouvre l'aperçu d'un fichier
+  async function handlePreview(file: FileInfo) {
+    if (!file.logical_path) {
+      setStatus({ type: 'error', message: 'Impossible de prévisualiser ce fichier : chemin logique manquant' })
+      return
+    }
+
+    setIsLoadingPreview(true)
+    setPreviewFile(file)
+    setShowPreview(true)
+    setStatus(null)
+
+    try {
+      // Télécharge et déchiffre le fichier
+      const decryptedData = await invoke<number[]>('preview_file', {
+        fileId: file.uuid || file.file_id,
+      })
+
+      // Convertit en Uint8Array
+      const dataArray = new Uint8Array(decryptedData)
+
+      // Détermine le type de fichier
+      const fileName = file.logical_path.split('/').pop() || ''
+      const ext = fileName.split('.').pop()?.toLowerCase() || ''
+      
+      let fileType: 'image' | 'text' | 'pdf' | 'unsupported' = 'unsupported'
+      
+      // Images
+      const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp']
+      if (imageExts.includes(ext)) {
+        fileType = 'image'
+      }
+      // PDF
+      else if (ext === 'pdf') {
+        fileType = 'pdf'
+      }
+      // Texte
+      else {
+        const textExts = ['txt', 'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'java', 'c', 'cpp', 'h', 'hpp', 'yaml', 'yml', 'ini', 'conf', 'log', 'csv']
+        if (textExts.includes(ext)) {
+          // Vérifie si c'est du texte valide UTF-8
+          try {
+            const decoder = new TextDecoder('utf-8', { fatal: true })
+            decoder.decode(dataArray)
+            fileType = 'text'
+          } catch {
+            // Pas du texte UTF-8 valide
+            fileType = 'unsupported'
+          }
+        }
+      }
+
+      setPreviewData({ data: dataArray, type: fileType })
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors de l'aperçu: ${errorMsg}` })
+      setShowPreview(false)
+      setPreviewFile(null)
+      setPreviewData(null)
+    } finally {
+      setIsLoadingPreview(false)
     }
   }
 
@@ -1547,6 +1615,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
             </div>
           )}
         </Card>
+        )}
       </div>
 
       {showSettings && wayneClient && (
@@ -1697,7 +1766,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
               <span>Supprimer</span>
             </button>
           </div>
-        <        />
+        </>
       )}
 
       {/* Menu contextuel */}
@@ -1995,6 +2064,173 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
               >
                 Créer
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal d'aperçu */}
+      {showPreview && previewFile && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(0, 0, 0, 0.8)',
+            zIndex: 2000,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowPreview(false)
+              setPreviewFile(null)
+              setPreviewData(null)
+            }
+          }}
+        >
+          <div
+            style={{
+              background: 'var(--bg-primary, white)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: '600' }}>
+                {previewFile.logical_path?.split('/').pop() || 'Aperçu'}
+              </h2>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {previewFile.logical_path && (
+                  <button
+                    onClick={() => handleDownload(previewFile)}
+                    disabled={isLoading}
+                    style={{
+                      background: 'var(--primary, #007bff)',
+                      color: 'white',
+                      border: 'none',
+                      padding: '0.5rem 1rem',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.9rem',
+                      opacity: isLoading ? 0.5 : 1,
+                    }}
+                  >
+                    📥 Télécharger
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setShowPreview(false)
+                    setPreviewFile(null)
+                    setPreviewData(null)
+                  }}
+                  style={{
+                    background: 'var(--bg-secondary, #f5f5f5)',
+                    border: 'none',
+                    padding: '0.5rem 1rem',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '1.2rem',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div style={{ overflow: 'auto', maxHeight: 'calc(90vh - 100px)' }}>
+              {isLoadingPreview ? (
+                <div style={{ textAlign: 'center', padding: '3rem' }}>
+                  <div className="spinner" style={{ margin: '0 auto 1rem', width: '40px', height: '40px', border: '4px solid #f3f3f3', borderTop: '4px solid var(--primary, #007bff)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                  <p>Chargement de l'aperçu...</p>
+                </div>
+              ) : previewData ? (
+                <>
+                  {previewData.type === 'image' && (
+                    <img
+                      src={URL.createObjectURL(new Blob([previewData.data]))}
+                      alt={previewFile.logical_path?.split('/').pop() || 'Aperçu'}
+                      style={{
+                        maxWidth: '100%',
+                        maxHeight: '70vh',
+                        objectFit: 'contain',
+                      }}
+                    />
+                  )}
+                  {previewData.type === 'text' && (
+                    <pre
+                      style={{
+                        background: 'var(--bg-secondary, #f5f5f5)',
+                        padding: '1rem',
+                        borderRadius: '6px',
+                        overflow: 'auto',
+                        maxHeight: '70vh',
+                        fontSize: '0.9rem',
+                        fontFamily: 'monospace',
+                        whiteSpace: 'pre-wrap',
+                        wordWrap: 'break-word',
+                      }}
+                    >
+                      {new TextDecoder('utf-8').decode(previewData.data)}
+                    </pre>
+                  )}
+                  {previewData.type === 'pdf' && (
+                    <iframe
+                      src={URL.createObjectURL(new Blob([previewData.data], { type: 'application/pdf' }))}
+                      style={{
+                        width: '100%',
+                        height: '70vh',
+                        border: 'none',
+                      }}
+                      title={previewFile.logical_path?.split('/').pop() || 'PDF'}
+                    />
+                  )}
+                  {previewData.type === 'unsupported' && (
+                    <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary, #666)' }}>
+                      <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📄</div>
+                      <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Aperçu non disponible</p>
+                      <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                        Ce type de fichier ne peut pas être prévisualisé.
+                      </p>
+                      {previewFile.logical_path && (
+                        <button
+                          onClick={() => handleDownload(previewFile)}
+                          disabled={isLoading}
+                          style={{
+                            background: 'var(--primary, #007bff)',
+                            color: 'white',
+                            border: 'none',
+                            padding: '0.75rem 1.5rem',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '1rem',
+                            opacity: isLoading ? 0.5 : 1,
+                          }}
+                        >
+                          📥 Télécharger le fichier
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary, #666)' }}>
+                  <p>Aucune donnée à afficher</p>
+                </div>
+              )}
             </div>
           </div>
         </div>

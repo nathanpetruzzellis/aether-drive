@@ -202,7 +202,7 @@ impl StorjClient {
     /// Liste tous les objets dans le bucket Storj.
     ///
     /// # Returns
-    /// Liste des clés d'objets
+    /// Liste des clés d'objets (fichiers uniquement, pas les préfixes/dossiers)
     pub async fn list_files(&self) -> Result<Vec<String>, StorjError> {
         let result = self
             .s3_client
@@ -212,10 +212,24 @@ impl StorjClient {
             .await
             .map_err(|e| StorjError::S3(format!("Failed to list files: {}", e)))?;
 
+        // Filtre uniquement les objets réels (pas les préfixes/dossiers)
+        // Les objets réels ont une taille > 0 ou sont des fichiers valides
+        // On ignore les objets qui se terminent par "/" (qui sont des préfixes/dossiers)
         let keys: Vec<String> = result
             .contents()
             .iter()
-            .filter_map(|obj| obj.key().map(|k| k.to_string()))
+            .filter_map(|obj| {
+                obj.key().and_then(|k| {
+                    let key_str = k.to_string();
+                    // Ignore les clés qui se terminent par "/" (préfixes/dossiers)
+                    // et ne garde que les fichiers réels
+                    if key_str.ends_with('/') {
+                        None
+                    } else {
+                        Some(key_str)
+                    }
+                })
+            })
             .collect();
 
         Ok(keys)
