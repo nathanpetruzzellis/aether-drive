@@ -16,6 +16,10 @@ import type {
   LogoutResponse,
   ChangePasswordRequest,
   ChangePasswordResponse,
+  SaveFileMetadataRequest,
+  SaveFileMetadataResponse,
+  GetFileMetadataResponse,
+  UserStatsResponse,
 } from './wayne_dto'
 import { withRetry, withTimeout } from './utils/retry'
 
@@ -505,6 +509,109 @@ export class WayneClient {
       return changePasswordResponse
     } catch (error) {
       this.handleNetworkError(error, 'changement de mot de passe')
+    }
+  }
+
+  // Sauvegarde les métadonnées anonymisées d'un fichier.
+  async saveFileMetadata(request: SaveFileMetadataRequest): Promise<SaveFileMetadataResponse> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/file-metadata`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(request),
+        },
+        'sauvegarde des métadonnées'
+      )
+
+      if (!response.ok) {
+        await this.handleError(response, 'sauvegarde des métadonnées')
+      }
+
+      return (await response.json()) as SaveFileMetadataResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'sauvegarde des métadonnées')
+    }
+  }
+
+  // Récupère toutes les métadonnées de l'utilisateur.
+  async getFileMetadata(): Promise<GetFileMetadataResponse> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/file-metadata`,
+        {
+          method: 'GET',
+          headers: this.getHeaders(),
+        },
+        'récupération des métadonnées'
+      )
+
+      if (!response.ok) {
+        await this.handleError(response, 'récupération des métadonnées')
+      }
+
+      return (await response.json()) as GetFileMetadataResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'récupération des métadonnées')
+    }
+  }
+
+  // Récupère les statistiques de l'utilisateur.
+  async getUserStats(): Promise<UserStatsResponse> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/file-metadata/stats`,
+        {
+          method: 'GET',
+          headers: this.getHeaders(),
+        },
+        'récupération des statistiques'
+      )
+
+      if (!response.ok) {
+        await this.handleError(response, 'récupération des statistiques')
+      }
+
+      return (await response.json()) as UserStatsResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'récupération des statistiques')
+    }
+  }
+
+  // Supprime les métadonnées d'un fichier.
+  async deleteFileMetadata(fileUuid: string): Promise<void> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/file-metadata/${fileUuid}`,
+        {
+          method: 'DELETE',
+          headers: this.getHeaders(),
+        },
+        'suppression des métadonnées'
+      )
+
+      if (!response.ok) {
+        await this.handleError(response, 'suppression des métadonnées')
+      }
+    } catch (error) {
+      this.handleNetworkError(error, 'suppression des métadonnées')
     }
   }
 }

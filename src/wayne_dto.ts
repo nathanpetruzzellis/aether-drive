@@ -136,4 +136,40 @@ export interface ChangePasswordResponse {
   message: string
 }
 
+// Métadonnées anonymisées de fichier (stockées sur Wayne).
+export interface FileMetadataDto {
+  id: string
+  file_uuid: string
+  encrypted_size: number
+  file_type: string | null
+  created_at: string
+  updated_at: string
+}
+
+// Requête de sauvegarde de métadonnées.
+export interface SaveFileMetadataRequest {
+  file_uuid: string
+  encrypted_size: number
+  file_type?: string
+}
+
+// Réponse de sauvegarde de métadonnées.
+export interface SaveFileMetadataResponse {
+  metadata: FileMetadataDto
+}
+
+// Réponse de récupération de métadonnées.
+export interface GetFileMetadataResponse {
+  metadata: FileMetadataDto[]
+}
+
+// Statistiques utilisateur.
+export interface UserStatsResponse {
+  stats: {
+    total_files: number
+    total_size: number
+    files_by_type: Record<string, number>
+  }
+}
+
 

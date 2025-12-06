@@ -41,6 +41,9 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [sortBy, setSortBy] = useState<SortField>('name')
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
   const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('all')
+  
+  // États pour les statistiques
+  const [userStats, setUserStats] = useState<{ total_files: number; total_size: number; files_by_type: Record<string, number> } | null>(null)
 
   // Configuration automatique de Storj au chargement
   useEffect(() => {
@@ -93,6 +96,22 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       loadFiles()
     }
   }, [storjConfigured])
+
+  // Chargement des statistiques utilisateur
+  useEffect(() => {
+    async function loadStats() {
+      if (wayneClient && wayneClient.getAccessToken()) {
+        try {
+          const statsResponse = await wayneClient.getUserStats()
+          setUserStats(statsResponse.stats)
+        } catch (e) {
+          console.warn('⚠️ Erreur lors du chargement des statistiques:', e)
+          // Ne bloque pas l'application si les statistiques ne peuvent pas être chargées
+        }
+      }
+    }
+    loadStats()
+  }, [wayneClient, files]) // Recharge les stats quand les fichiers changent
 
   // Note: Le drag & drop HTML5 ne fonctionne pas dans Tauri car Tauri intercepte les événements natifs
   // Pour l'instant, on utilise uniquement le sélecteur de fichier
@@ -184,65 +203,96 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     setIsUploading(true)
     setStatus({ type: 'info', message: `📤 Préparation de "${file.name}"...` })
 
-    let attempts = 0
-    const maxAttempts = 3
+    try {
+      let attempts = 0
+      const maxAttempts = 3
 
-    while (attempts < maxAttempts) {
-      try {
-        attempts++
-        
-        if (attempts > 1) {
-          setStatus({ type: 'info', message: `🔄 Nouvelle tentative d'upload (${attempts}/${maxAttempts})...` })
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
-        } else {
-          setStatus({ type: 'info', message: `📤 Lecture du fichier "${file.name}"...` })
-        }
+      while (attempts < maxAttempts) {
+        try {
+          attempts++
+          
+          if (attempts > 1) {
+            setStatus({ type: 'info', message: `🔄 Nouvelle tentative d'upload (${attempts}/${maxAttempts})...` })
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
+          } else {
+            setStatus({ type: 'info', message: `📤 Lecture du fichier "${file.name}"...` })
+          }
 
-        // Lit le fichier
-        const fileData = await file.arrayBuffer()
-        const fileArray = Array.from(new Uint8Array(fileData))
+          // Lit le fichier
+          const fileData = await file.arrayBuffer()
+          const fileArray = Array.from(new Uint8Array(fileData))
 
-        // Génère automatiquement le chemin logique depuis le nom du fichier
-        const logicalPath = `/${file.name}`
+          // Génère automatiquement le chemin logique depuis le nom du fichier
+          const logicalPath = `/${file.name}`
 
-        setStatus({ type: 'info', message: `🔐 Chiffrement de "${file.name}"...` })
+          setStatus({ type: 'info', message: `🔐 Chiffrement de "${file.name}"...` })
 
-        // Chiffre le fichier
-        const encrypted = await invoke<number[]>('storage_encrypt_file', {
-          data: fileArray,
-          logicalPath: logicalPath,
-        })
-
-        setStatus({ type: 'info', message: `☁️ Upload de "${file.name}" vers Storj...` })
-
-        // Upload vers Storj (synchronise automatiquement avec l'index local)
-        await invoke<string>('storj_upload_file', {
-          encryptedData: encrypted,
-          logicalPath: logicalPath,
-        })
-
-        setStatus({ type: 'success', message: `✅ Fichier "${file.name}" uploadé avec succès` })
-        
-        // Recharge la liste des fichiers
-        await loadFiles()
-        return
-      } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : String(e)
-        
-        if (attempts >= maxAttempts) {
-          // Dernière tentative échouée
-          setStatus({ 
-            type: 'error', 
-            message: `Erreur lors de l'upload de "${file.name}" après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Le fichier est peut-être trop volumineux\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+          // Chiffre le fichier
+          const encrypted = await invoke<number[]>('storage_encrypt_file', {
+            data: fileArray,
+            logicalPath: logicalPath,
           })
-        } else {
-          // Continue avec le retry
-          console.warn(`Tentative ${attempts} d'upload échouée, nouvelle tentative...`, errorMsg)
+
+          setStatus({ type: 'info', message: `☁️ Upload de "${file.name}" vers Storj...` })
+
+          // Récupère l'UUID du fichier depuis le fichier chiffré
+          const fileInfo = await invoke<{ uuid: number[]; encrypted_size: number }>('storage_get_file_info', {
+            encryptedData: encrypted,
+          })
+          
+          // Convertit l'UUID en format hexadécimal (format standard)
+          const uuidHex = fileInfo.uuid.map(b => b.toString(16).padStart(2, '0')).join('')
+          const uuidFormatted = `${uuidHex.slice(0, 8)}-${uuidHex.slice(8, 12)}-${uuidHex.slice(12, 16)}-${uuidHex.slice(16, 20)}-${uuidHex.slice(20, 32)}`
+
+          // Upload vers Storj (synchronise automatiquement avec l'index local)
+          await invoke<string>('storj_upload_file', {
+            encryptedData: encrypted,
+            logicalPath: logicalPath,
+          })
+
+          // Synchronise les métadonnées anonymisées sur Wayne
+          if (wayneClient && wayneClient.getAccessToken()) {
+            try {
+              const fileType = getFileCategory(file.name)
+              await wayneClient.saveFileMetadata({
+                file_uuid: uuidFormatted,
+                encrypted_size: encrypted.length,
+                file_type: fileType !== 'other' ? fileType : undefined,
+              })
+              // Recharge les statistiques après sauvegarde des métadonnées
+              const statsResponse = await wayneClient.getUserStats()
+              setUserStats(statsResponse.stats)
+            } catch (metadataError) {
+              // Ne bloque pas l'upload si la sauvegarde des métadonnées échoue
+              console.warn('⚠️ Erreur lors de la sauvegarde des métadonnées:', metadataError)
+            }
+          }
+
+          setStatus({ type: 'success', message: `✅ Fichier "${file.name}" uploadé avec succès` })
+          
+          // Recharge la liste des fichiers
+          await loadFiles()
+          return
+        } catch (e) {
+          const errorMsg = e instanceof Error ? e.message : String(e)
+          
+          if (attempts >= maxAttempts) {
+            // Dernière tentative échouée
+            setStatus({ 
+              type: 'error', 
+              message: `Erreur lors de l'upload de "${file.name}" après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Le fichier est peut-être trop volumineux\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+            })
+            break
+          } else {
+            // Continue avec le retry
+            console.warn(`Tentative ${attempts} d'upload échouée, nouvelle tentative...`, errorMsg)
+          }
         }
       }
+    } finally {
+      // S'assure que isUploading est toujours réinitialisé
+      setIsUploading(false)
     }
-    
-    setIsUploading(false)
   }
 
   // Gestion du drag & drop
@@ -420,6 +470,27 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           fileUuid: uuidBytes,
         })
 
+        // Supprime les métadonnées sur Wayne
+        // Convertit l'UUID en format standard si nécessaire
+        let fileUuidForMetadata = file.uuid
+        if (!fileUuidForMetadata.includes('-')) {
+          // Format hex sans tirets, on le formate
+          const formatted = `${fileUuidForMetadata.slice(0, 8)}-${fileUuidForMetadata.slice(8, 12)}-${fileUuidForMetadata.slice(12, 16)}-${fileUuidForMetadata.slice(16, 20)}-${fileUuidForMetadata.slice(20, 32)}`
+          fileUuidForMetadata = formatted
+        }
+        
+        if (wayneClient && wayneClient.getAccessToken()) {
+          try {
+            await wayneClient.deleteFileMetadata(fileUuidForMetadata)
+            // Recharge les statistiques après suppression des métadonnées
+            const statsResponse = await wayneClient.getUserStats()
+            setUserStats(statsResponse.stats)
+          } catch (metadataError) {
+            // Ne bloque pas la suppression si la suppression des métadonnées échoue
+            console.warn('⚠️ Erreur lors de la suppression des métadonnées:', metadataError)
+          }
+        }
+
         setStatus({ type: 'success', message: `✅ Fichier "${fileName}" supprimé avec succès` })
         
         // Recharge la liste des fichiers
@@ -543,6 +614,12 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
         <div className="dashboard-header-left">
           <h1>Aether Drive</h1>
           <p className="dashboard-subtitle">Stockage sécurisé Zero-Knowledge</p>
+          {userStats && (
+            <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary, #666)' }}>
+              <span>📊 {userStats.total_files} fichier{userStats.total_files > 1 ? 's' : ''}</span>
+              <span>💾 {formatSize(userStats.total_size)}</span>
+            </div>
+          )}
         </div>
         <div className="dashboard-header-right">
           {wayneClient && wayneClient.getAccessToken() && (

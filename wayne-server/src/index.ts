@@ -8,6 +8,7 @@ import { testConnection } from './db/connection';
 import authRoutes from './routes/auth';
 import keyEnvelopesRoutes from './routes/keyEnvelopes';
 import storjRoutes from './routes/storj';
+import fileMetadataRoutes from './routes/fileMetadata';
 
 // Charge le fichier .env depuis le répertoire du projet
 dotenv.config({ path: path.join(__dirname, '../.env') });
@@ -17,6 +18,8 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware de sécurité
 app.use(helmet());
+// Configure Express pour faire confiance au proxy (Nginx)
+app.set('trust proxy', true);
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   credentials: true,
@@ -48,6 +51,7 @@ app.get('/health', async (req: Request, res: Response) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/key-envelopes', keyEnvelopesRoutes);
 app.use('/api/v1/storj-config', storjRoutes);
+app.use('/api/v1/file-metadata', fileMetadataRoutes);
 
 // Route 404
 app.use((req: Request, res: Response) => {
@@ -85,6 +89,7 @@ async function startServer() {
       console.log(`🔐 API Auth: http://localhost:${PORT}/api/v1/auth`);
       console.log(`🔑 API Key Envelopes: http://localhost:${PORT}/api/v1/key-envelopes`);
       console.log(`☁️ API Storj Config: http://localhost:${PORT}/api/v1/storj-config`);
+      console.log(`📊 API File Metadata: http://localhost:${PORT}/api/v1/file-metadata`);
     });
   } catch (error) {
     console.error('❌ Erreur lors du démarrage du serveur:', error);
