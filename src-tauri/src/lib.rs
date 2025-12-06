@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 use tauri::{Manager, State};
+use rand::RngCore;
 
 #[derive(Debug, Serialize)]
 pub struct MkekBootstrapResponse {
@@ -394,6 +395,262 @@ fn index_list_files(
             encrypted_size: meta.encrypted_size,
         })
         .collect())
+}
+
+/// Représente un dossier dans la hiérarchie
+#[derive(Debug, Serialize)]
+pub struct FolderInfo {
+    pub name: String,
+    pub path: String,
+}
+
+/// Représente un fichier ou un dossier dans un chemin donné
+#[derive(Debug, Serialize)]
+pub struct DirectoryEntry {
+    pub files: Vec<FileEntry>,
+    pub folders: Vec<FolderInfo>,
+}
+
+/// Normalise un chemin (supprime les doubles slashes, termine par / si c'est un dossier)
+fn normalize_path(path: &str) -> String {
+    let mut normalized = path.replace("//", "/");
+    if !normalized.starts_with('/') {
+        normalized = format!("/{}", normalized);
+    }
+    normalized
+}
+
+/// Vérifie si un chemin est un préfixe d'un autre
+fn is_prefix(prefix: &str, path: &str) -> bool {
+    let prefix = normalize_path(prefix);
+    let path = normalize_path(path);
+    
+    // Cas spécial : si le préfixe est "/", tous les chemins qui commencent par "/" sont valides
+    if prefix == "/" {
+        return path.starts_with("/");
+    }
+    
+    // Pour les autres cas, vérifie que le path commence par le prefix et que le caractère suivant est "/" ou la fin
+    path.starts_with(&prefix) && (path.len() == prefix.len() || path.chars().nth(prefix.len()) == Some('/'))
+}
+
+/// Extrait le chemin parent d'un chemin
+fn get_parent_path(path: &str) -> String {
+    let path = normalize_path(path);
+    if path == "/" {
+        return "/".to_string();
+    }
+    let path = path.trim_end_matches('/');
+    if let Some(last_slash) = path.rfind('/') {
+        if last_slash == 0 {
+            "/".to_string()
+        } else {
+            path[..last_slash].to_string()
+        }
+    } else {
+        "/".to_string()
+    }
+}
+
+/// Extrait le nom du fichier ou dossier depuis un chemin complet
+fn get_name_from_path(path: &str) -> String {
+    let path = path.trim_end_matches('/');
+    path.split('/').last().unwrap_or("").to_string()
+}
+
+#[tauri::command]
+fn list_files_and_folders(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    parent_path: Option<String>,
+) -> Result<DirectoryEntry, String> {
+    let parent = parent_path.as_deref().unwrap_or("/");
+    let parent_normalized = normalize_path(parent);
+    
+    log::info!("list_files_and_folders called: parent_path={:?}, parent_normalized={}", parent_path, parent_normalized);
+    
+    let index = open_index_with_state(&app, &state)?;
+    let entries = index
+        .list_all()
+        .map_err(|e| format!("Failed to list files: {}", e))?;
+    
+    log::info!("Found {} total entries in index", entries.len());
+    for (id, meta) in &entries {
+        log::info!("  Entry: id={}, path={}, size={}", id, meta.logical_path, meta.encrypted_size);
+    }
+    
+    let mut files = Vec::new();
+    let mut folder_paths = std::collections::HashSet::new();
+    
+    for (id, meta) in entries {
+        // IMPORTANT: Ne normalise PAS le chemin pour les dossiers, car normalize_path supprime le slash final
+        // On utilise le chemin original pour détecter les dossiers
+        let original_path = &meta.logical_path;
+        let file_path = normalize_path(original_path);
+        
+        // Si le chemin original se termine par / OU si encrypted_size = 0, c'est un dossier vide
+        let is_folder = original_path.ends_with('/') || meta.encrypted_size == 0;
+        
+        if is_folder {
+            // C'est un dossier vide
+            // Pour un dossier, on doit vérifier si son parent correspond au parent_normalized
+            // Exemple : dossier "/dossier1/" a pour parent "/"
+            // Utilise le chemin original (qui se termine par /) pour extraire le parent
+            let folder_path_clean = original_path.trim_end_matches('/');
+            let folder_parent = if folder_path_clean == "/" || folder_path_clean.is_empty() {
+                "/".to_string()
+            } else {
+                get_parent_path(folder_path_clean)
+            };
+            
+            log::info!("Checking folder: original_path={}, folder_path_clean={}, folder_parent={}, parent_normalized={}", original_path, folder_path_clean, folder_parent, parent_normalized);
+            
+            // Normalise les deux chemins pour la comparaison
+            let folder_parent_normalized = normalize_path(&folder_parent);
+            let parent_normalized_clean = normalize_path(&parent_normalized);
+            
+            if folder_parent_normalized == parent_normalized_clean {
+                let folder_name = get_name_from_path(original_path);
+                if !folder_name.is_empty() {
+                    // Utilise le chemin original qui se termine déjà par /
+                    let folder_path_normalized = if original_path.ends_with('/') {
+                        original_path.clone()
+                    } else {
+                        format!("{}/", original_path)
+                    };
+                    let folder_path_normalized_clone = folder_path_normalized.clone();
+                    folder_paths.insert(folder_path_normalized);
+                    log::info!("✅ Added empty folder: {} (original_path: {}, normalized: {})", folder_name, original_path, folder_path_normalized_clone);
+                } else {
+                    log::warn!("⚠️ Folder name is empty for path: {}", original_path);
+                }
+            } else {
+                log::info!("⏭️ Folder {} not in parent {} (folder_parent: {})", original_path, parent_normalized, folder_parent);
+            }
+            continue; // Skip les dossiers dans le traitement des fichiers
+        }
+        
+        // Vérifie si le fichier est dans le chemin parent
+        let is_in_parent = is_prefix(&parent_normalized, &file_path);
+        log::info!("Checking file {} (path: {}): is_in_parent={}", id, file_path, is_in_parent);
+        
+        if !is_in_parent {
+            continue;
+        }
+        
+        // Extrait le chemin relatif au parent
+        let relative_path = if parent_normalized == "/" {
+            file_path.trim_start_matches('/').to_string()
+        } else {
+            file_path.strip_prefix(&parent_normalized)
+                .unwrap_or(&file_path)
+                .trim_start_matches('/')
+                .to_string()
+        };
+        
+        // Si le chemin relatif est vide, on skip (ne devrait pas arriver)
+        if relative_path.is_empty() {
+            log::warn!("Empty relative path for file {}", id);
+            continue;
+        }
+        
+        // Si le chemin relatif contient un slash, c'est dans un sous-dossier
+        if relative_path.contains('/') {
+            // Extrait le nom du premier sous-dossier
+            let first_folder = relative_path.split('/').next().unwrap_or("");
+            if !first_folder.is_empty() {
+                let folder_path = if parent_normalized == "/" {
+                    format!("/{}", first_folder)
+                } else {
+                    format!("{}/{}", parent_normalized, first_folder)
+                };
+                folder_paths.insert(folder_path);
+                log::info!("Added folder: {}", first_folder);
+            }
+        } else {
+            // C'est un fichier directement dans le parent
+            let file_id = id.clone();
+            files.push(FileEntry {
+                id,
+                logical_path: meta.logical_path,
+                encrypted_size: meta.encrypted_size,
+            });
+            log::info!("Added file: {} (relative_path: {})", file_id, relative_path);
+        }
+    }
+    
+    // Convertit les chemins de dossiers en FolderInfo
+    let folders: Vec<FolderInfo> = folder_paths
+        .into_iter()
+        .map(|path| FolderInfo {
+            name: get_name_from_path(&path),
+            path: path.clone(),
+        })
+        .collect();
+    
+    log::info!("Returning {} files and {} folders", files.len(), folders.len());
+    
+    Ok(DirectoryEntry { files, folders })
+}
+
+/// Crée un dossier vide dans l'index
+#[tauri::command]
+fn create_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    folder_name: String,
+    parent_path: Option<String>,
+) -> Result<String, String> {
+    let parent = parent_path.as_deref().unwrap_or("/");
+    let parent_normalized = normalize_path(parent);
+    
+    // Valide le nom du dossier
+    if folder_name.is_empty() {
+        return Err("Le nom du dossier ne peut pas être vide".to_string());
+    }
+    if folder_name.contains('/') {
+        return Err("Le nom du dossier ne peut pas contenir de slash".to_string());
+    }
+    
+    // Génère un UUID pour le dossier (comme pour les fichiers)
+    let mut uuid_bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut uuid_bytes);
+    let folder_id = hex::encode(uuid_bytes);
+    
+    // Construit le chemin complet du dossier (se termine par /)
+    let folder_path = if parent_normalized == "/" {
+        format!("/{}/", folder_name)
+    } else {
+        format!("{}/{}/", parent_normalized, folder_name)
+    };
+    
+    log::info!("Creating folder: {} (path: {}, id: {})", folder_name, folder_path, folder_id);
+    
+    // Vérifie si le dossier existe déjà
+    let index_check = open_index_with_state(&app, &state)?;
+    let all_entries = index_check.list_all()
+        .map_err(|e| format!("Failed to check existing folders: {}", e))?;
+    
+    for (_, meta) in all_entries {
+        let existing_path = normalize_path(&meta.logical_path);
+        if existing_path == folder_path || existing_path == folder_path.trim_end_matches('/') {
+            return Err(format!("Un dossier avec le nom '{}' existe déjà", folder_name));
+        }
+    }
+    
+    // Ajoute le dossier dans l'index avec encrypted_size = 0 (indique que c'est un dossier)
+    let mut index = open_index_with_state(&app, &state)?;
+    let metadata = FileMetadata {
+        logical_path: folder_path.clone(),
+        encrypted_size: 0, // 0 indique que c'est un dossier vide
+    };
+    
+    index.upsert(folder_id.clone(), metadata)
+        .map_err(|e| format!("Failed to create folder in index: {}", e))?;
+    
+    log::info!("Folder created successfully: {}", folder_path);
+    
+    Ok(folder_path)
 }
 
 #[tauri::command]
@@ -1029,33 +1286,125 @@ async fn storj_delete_file(
     let object_key = format!("{}", uuid_hex);
     let file_id = uuid_hex.clone();
     
-    let client = {
-        let client_guard = state.storj_client.lock().await;
-        client_guard.clone()
-            .ok_or_else(|| "Storj client not configured. Call storj_configure first.".to_string())?
-    };
-    
-    // Supprime de Storj
-    client.delete_file(&object_key)
-        .await
-        .map_err(|e| format!("Failed to delete file from Storj: {}", e))?;
-    
-    log::info!("File deleted successfully from Storj: object_key={}", object_key);
-    
-    // Synchronise avec l'index local : supprime l'entrée après suppression Storj réussie
+    // Déplace vers la corbeille au lieu de supprimer définitivement
+    // Le fichier reste sur Storj jusqu'à ce qu'on vide la corbeille ou qu'on supprime définitivement
     let mut index = open_index_with_state(&app, &state)
         .map_err(|e| {
-            log::error!("Failed to open index for sync: {}", e);
-            format!("File deleted from Storj but failed to sync with local index: {}", e)
+            log::error!("Failed to open index for trash: {}", e);
+            format!("Failed to open index: {}", e)
         })?;
     
-    if let Err(e) = index.remove(&file_id) {
-        log::warn!("File deleted from Storj but not found in local index (may have been already removed): {}", e);
-        // On continue car le fichier a été supprimé de Storj avec succès
+    // Récupère les métadonnées du fichier avant de le déplacer
+    let metadata = index.get(&file_id)
+        .map_err(|e| format!("Failed to get file metadata: {}", e))?
+        .ok_or_else(|| format!("File not found in index: {}", file_id))?;
+    
+    // Déplace vers la corbeille
+    index.move_to_trash(&file_id, &metadata)
+        .map_err(|e| format!("Failed to move file to trash: {}", e))?;
+    
+    log::info!("File moved to trash: file_id={}, logical_path={}", file_id, metadata.logical_path);
+    Ok(())
+}
+
+/// Renomme un fichier (télécharge, déchiffre, re-chiffre avec nouveau chemin, re-upload, met à jour index)
+#[tauri::command]
+async fn rename_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    old_logical_path: String,
+    new_logical_path: String,
+) -> Result<String, String> {
+    log::info!("rename_file called: old_path={}, new_path={}", old_logical_path, new_logical_path);
+    
+    // Étape 1 : Trouve le fichier dans l'index local par ancien chemin
+    let file_id = {
+        let index = open_index_with_state(&app, &state)
+            .map_err(|e| format!("Failed to open index: {}", e))?;
+        
+        let entries = index.list_all()
+            .map_err(|e| format!("Failed to list files from index: {}", e))?;
+        
+        let (file_id, _metadata) = entries
+            .into_iter()
+            .find(|(_, meta)| meta.logical_path == old_logical_path)
+            .ok_or_else(|| format!("File not found in local index: {}", old_logical_path))?;
+        
+        log::info!("Found file in index: file_id={}, old_logical_path={}", file_id, old_logical_path);
+        file_id
+    };
+    
+    // Étape 2 : Télécharge le fichier depuis Storj
+    log::info!("Downloading file from Storj: file_id={}", file_id);
+    let encrypted_data = {
+        let file_uuid = hex::decode(&file_id)
+            .map_err(|e| format!("Invalid UUID format in index: {}", e))?;
+        
+        if file_uuid.len() != 16 {
+            return Err(format!("Invalid UUID length in index: expected 16 bytes, got {}", file_uuid.len()));
+        }
+        
+        let uuid_array: [u8; 16] = file_uuid.try_into()
+            .map_err(|_| "Failed to convert UUID to array".to_string())?;
+        
+        storj_download_file(state.clone(), uuid_array.to_vec()).await?
+    };
+    
+    log::info!("File downloaded from Storj: size={} bytes", encrypted_data.len());
+    
+    // Étape 3 : Déchiffre le fichier avec l'ancien logical_path
+    log::info!("Decrypting file with old logical_path: {}", old_logical_path);
+    let plaintext = storage_decrypt_file(state.clone(), encrypted_data.clone(), old_logical_path.clone())
+        .map_err(|e| format!("Failed to decrypt file: {}", e))?;
+    
+    log::info!("File decrypted successfully: plaintext_len={}", plaintext.len());
+    
+    // Étape 4 : Re-chiffre avec le nouveau logical_path (génère un nouveau UUID)
+    log::info!("Re-encrypting file with new logical_path: {}", new_logical_path);
+    let new_encrypted_data = storage_encrypt_file(app.clone(), state.clone(), plaintext, new_logical_path.clone())
+        .map_err(|e| format!("Failed to re-encrypt file: {}", e))?;
+    
+    // Récupère le nouveau UUID du fichier re-chiffré
+    let new_file_info = storage_get_file_info(new_encrypted_data.clone())
+        .map_err(|e| format!("Failed to get file info: {}", e))?;
+    let new_uuid_hex = hex::encode(&new_file_info.uuid);
+    
+    log::info!("File re-encrypted successfully: new_uuid={}, new_size={}", new_uuid_hex, new_encrypted_data.len());
+    
+    // Étape 5 : Upload le nouveau fichier vers Storj
+    log::info!("Uploading renamed file to Storj: new_uuid={}", new_uuid_hex);
+    let _upload_result = storj_upload_file(app.clone(), state.clone(), new_encrypted_data, new_logical_path.clone()).await
+        .map_err(|e| format!("Failed to upload renamed file to Storj: {}", e))?;
+    
+    log::info!("Renamed file uploaded successfully to Storj");
+    
+    // Étape 6 : Supprime l'ancien fichier de Storj
+    log::info!("Deleting old file from Storj: old_uuid={}", file_id);
+    let old_uuid_bytes = hex::decode(&file_id)
+        .map_err(|e| format!("Invalid UUID format: {}", e))?;
+    let old_uuid_array: [u8; 16] = old_uuid_bytes.try_into()
+        .map_err(|_| "Failed to convert UUID to array".to_string())?;
+    
+    storj_delete_file(app.clone(), state.clone(), old_uuid_array.to_vec()).await
+        .map_err(|e| format!("Failed to delete old file from Storj: {}", e))?;
+    
+    log::info!("Old file deleted successfully from Storj");
+    
+    // Étape 7 : L'index local a déjà été mis à jour par storage_encrypt_file et storj_upload_file
+    // Mais on doit supprimer l'ancienne entrée de l'index
+    {
+        let mut index = open_index_with_state(&app, &state)
+            .map_err(|e| format!("Failed to open index for cleanup: {}", e))?;
+        
+        index.remove(&file_id)
+            .map_err(|e| format!("Failed to remove old file from index: {}", e))?;
+        
+        log::info!("Old file entry removed from local index");
     }
     
-    log::info!("File synchronized with local index (removed): file_id={}", file_id);
-    Ok(())
+    log::info!("✅ File renamed successfully: {} -> {} (old_uuid={}, new_uuid={})", old_logical_path, new_logical_path, file_id, new_uuid_hex);
+    
+    Ok(new_uuid_hex)
 }
 
 #[tauri::command]
@@ -1114,6 +1463,150 @@ async fn storj_download_file_by_path(
     Ok(data)
 }
 
+/// Liste tous les fichiers dans la corbeille
+#[tauri::command]
+fn list_trash(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<TrashEntry>, String> {
+    log::info!("list_trash called");
+    
+    let index = open_index_with_state(&app, &state)?;
+    let trash_items = index.list_trash()
+        .map_err(|e| format!("Failed to list trash: {}", e))?;
+    
+    let entries: Vec<TrashEntry> = trash_items.into_iter().map(|(id, meta, deleted_at)| {
+        TrashEntry {
+            id,
+            logical_path: meta.logical_path,
+            encrypted_size: meta.encrypted_size,
+            deleted_at,
+        }
+    }).collect();
+    
+    log::info!("Found {} items in trash", entries.len());
+    Ok(entries)
+}
+
+/// Restaure un fichier depuis la corbeille vers l'index principal
+#[tauri::command]
+fn restore_from_trash(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    file_id: String,
+) -> Result<String, String> {
+    log::info!("restore_from_trash called: file_id={}", file_id);
+    
+    let mut index = open_index_with_state(&app, &state)?;
+    let metadata = index.restore_from_trash(&file_id)
+        .map_err(|e| format!("Failed to restore file from trash: {}", e))?;
+    
+    log::info!("File restored from trash: file_id={}, logical_path={}", file_id, metadata.logical_path);
+    Ok(metadata.logical_path)
+}
+
+/// Supprime définitivement un fichier de la corbeille (supprime aussi de Storj)
+#[tauri::command]
+async fn permanently_delete_from_trash(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    file_id: String,
+) -> Result<(), String> {
+    log::info!("permanently_delete_from_trash called: file_id={}", file_id);
+    
+    // Convertit le file_id en UUID bytes
+    let file_uuid = hex::decode(&file_id)
+        .map_err(|e| format!("Invalid UUID format: {}", e))?;
+    
+    if file_uuid.len() != 16 {
+        return Err(format!("Invalid UUID length: expected 16 bytes, got {}", file_uuid.len()));
+    }
+    
+    let uuid_array: [u8; 16] = file_uuid.try_into()
+        .map_err(|_| "Failed to convert UUID to array".to_string())?;
+    
+    // Supprime de Storj
+    let client = {
+        let client_guard = state.storj_client.lock().await;
+        client_guard.clone()
+            .ok_or_else(|| "Storj client not configured. Call storj_configure first.".to_string())?
+    };
+    
+    let uuid_hex = hex::encode(&uuid_array);
+    let object_key = format!("{}", uuid_hex);
+    
+    client.delete_file(&object_key)
+        .await
+        .map_err(|e| format!("Failed to delete file from Storj: {}", e))?;
+    
+    log::info!("File deleted from Storj: object_key={}", object_key);
+    
+    // Supprime de la corbeille
+    let mut index = open_index_with_state(&app, &state)?;
+    index.remove_from_trash(&file_id)
+        .map_err(|e| format!("Failed to remove file from trash: {}", e))?;
+    
+    log::info!("File permanently deleted from trash: file_id={}", file_id);
+    Ok(())
+}
+
+/// Vide complètement la corbeille (supprime définitivement tous les fichiers de Storj et de la corbeille)
+#[tauri::command]
+async fn empty_trash(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    log::info!("empty_trash called");
+    
+    // Liste tous les fichiers dans la corbeille
+    let index = open_index_with_state(&app, &state)?;
+    let trash_items = index.list_trash()
+        .map_err(|e| format!("Failed to list trash: {}", e))?;
+    
+    let count = trash_items.len();
+    log::info!("Found {} items in trash to delete permanently", count);
+    
+    // Supprime tous les fichiers de Storj
+    let client = {
+        let client_guard = state.storj_client.lock().await;
+        client_guard.clone()
+            .ok_or_else(|| "Storj client not configured. Call storj_configure first.".to_string())?
+    };
+    
+    for (file_id, _, _) in &trash_items {
+        let file_uuid = hex::decode(file_id)
+            .map_err(|e| format!("Invalid UUID format: {}", e))?;
+        
+        if file_uuid.len() == 16 {
+            let uuid_array: [u8; 16] = file_uuid.try_into()
+                .map_err(|_| "Failed to convert UUID to array".to_string())?;
+            let uuid_hex = hex::encode(&uuid_array);
+            let object_key = format!("{}", uuid_hex);
+            
+            // Supprime de Storj (ignore les erreurs pour continuer avec les autres fichiers)
+            if let Err(e) = client.delete_file(&object_key).await {
+                log::warn!("Failed to delete file {} from Storj: {}", file_id, e);
+            }
+        }
+    }
+    
+    // Vide la corbeille
+    let mut index = open_index_with_state(&app, &state)?;
+    let deleted_count = index.empty_trash()
+        .map_err(|e| format!("Failed to empty trash: {}", e))?;
+    
+    log::info!("Trash emptied: {} items permanently deleted", deleted_count);
+    Ok(deleted_count)
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrashEntry {
+    pub id: String,
+    pub logical_path: String,
+    pub encrypted_size: u64,
+    pub deleted_at: i64, // Timestamp Unix en secondes
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1132,6 +1625,8 @@ pub fn run() {
             get_index_status,
             index_add_file,
             index_list_files,
+            list_files_and_folders,
+            create_folder,
             index_remove_file,
             index_get_file,
             index_verify_integrity,
@@ -1144,6 +1639,11 @@ pub fn run() {
             storj_download_file_by_path,
             storj_list_files,
             storj_delete_file,
+            rename_file,
+            list_trash,
+            restore_from_trash,
+            permanently_delete_from_trash,
+            empty_trash,
             select_and_read_file,
             select_and_read_file_from_path,
             save_decrypted_file

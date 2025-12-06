@@ -8,7 +8,7 @@ use super::{merkle::MerkleTree, FileId, FileMetadata};
 
 const DB_KEY_INFO: &[u8] = b"aether-drive:sqlcipher-key:v1";
 const HMAC_KEY_INFO: &[u8] = b"aether-drive:index-hmac-key:v1";
-const SCHEMA_VERSION: u32 = 2; // Incrémenté pour ajouter le champ HMAC
+const SCHEMA_VERSION: u32 = 3; // Incrémenté pour ajouter la table trash
 const DB_KEY_LEN: usize = 32;
 const HMAC_LEN: usize = 32;
 
@@ -142,6 +142,18 @@ impl SqlCipherIndex {
             [],
         )?;
         
+        // Crée la table pour la corbeille (suppression temporaire).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS trash (
+                id TEXT PRIMARY KEY,
+                logical_path TEXT NOT NULL,
+                encrypted_size INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                hmac BLOB NOT NULL
+            )",
+            [],
+        )?;
+        
         // Migration : ajoute le champ HMAC si la table existe sans ce champ.
         let current_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap_or(0);
         if current_version < SCHEMA_VERSION {
@@ -152,6 +164,17 @@ impl SqlCipherIndex {
                 "CREATE TABLE IF NOT EXISTS index_metadata (
                     key TEXT PRIMARY KEY,
                     value BLOB NOT NULL
+                )",
+                [],
+            ).ok();
+            // Crée la table trash si elle n'existe pas (migration vers version 3).
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS trash (
+                    id TEXT PRIMARY KEY,
+                    logical_path TEXT NOT NULL,
+                    encrypted_size INTEGER NOT NULL,
+                    deleted_at INTEGER NOT NULL,
+                    hmac BLOB NOT NULL
                 )",
                 [],
             ).ok();
@@ -198,6 +221,18 @@ impl SqlCipherIndex {
             [],
         )?;
         
+        // Crée la table pour la corbeille (suppression temporaire).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS trash (
+                id TEXT PRIMARY KEY,
+                logical_path TEXT NOT NULL,
+                encrypted_size INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                hmac BLOB NOT NULL
+            )",
+            [],
+        )?;
+        
         // Migration : ajoute le champ HMAC si nécessaire.
         let current_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap_or(0);
         if current_version < SCHEMA_VERSION {
@@ -206,6 +241,17 @@ impl SqlCipherIndex {
                 "CREATE TABLE IF NOT EXISTS index_metadata (
                     key TEXT PRIMARY KEY,
                     value BLOB NOT NULL
+                )",
+                [],
+            ).ok();
+            // Crée la table trash si elle n'existe pas (migration vers version 3).
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS trash (
+                    id TEXT PRIMARY KEY,
+                    logical_path TEXT NOT NULL,
+                    encrypted_size INTEGER NOT NULL,
+                    deleted_at INTEGER NOT NULL,
+                    hmac BLOB NOT NULL
                 )",
                 [],
             ).ok();
@@ -284,6 +330,128 @@ impl SqlCipherIndex {
         self.update_merkle_root()?;
         
         Ok(())
+    }
+
+    /// Déplace un fichier vers la corbeille (suppression temporaire).
+    pub fn move_to_trash(&mut self, id: &FileId, meta: &FileMetadata) -> SqliteResult<()> {
+        // Calcule le HMAC pour la corbeille.
+        let hmac = self.compute_hmac(id, &meta.logical_path, meta.encrypted_size);
+        
+        // Timestamp Unix (secondes depuis epoch).
+        let deleted_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        
+        // Insère dans la corbeille.
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trash (id, logical_path, encrypted_size, deleted_at, hmac) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, meta.logical_path, meta.encrypted_size as i64, deleted_at, hmac.as_slice()],
+        )?;
+        
+        // Supprime de l'index principal.
+        self.conn.execute("DELETE FROM file_index WHERE id = ?1", [id])?;
+        
+        // Met à jour le hash Merkle de l'index.
+        self.update_merkle_root()?;
+        
+        Ok(())
+    }
+
+    /// Restaure un fichier depuis la corbeille vers l'index principal.
+    pub fn restore_from_trash(&mut self, id: &FileId) -> SqliteResult<FileMetadata> {
+        // Récupère les métadonnées depuis la corbeille (on clone les valeurs nécessaires avant de modifier self).
+        let (logical_path, encrypted_size): (String, u64) = {
+            let mut stmt = self.conn.prepare(
+                "SELECT logical_path, encrypted_size, hmac FROM trash WHERE id = ?1"
+            )?;
+            let mut rows = stmt.query_map([id], |row| {
+                let logical_path: String = row.get(0)?;
+                let encrypted_size: i64 = row.get(1)?;
+                let stored_hmac: Vec<u8> = row.get(2)?;
+                
+                // Vérifie le HMAC.
+                let computed_hmac = self.compute_hmac(id, &logical_path, encrypted_size as u64);
+                if stored_hmac != computed_hmac.as_slice() {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                
+                Ok((logical_path, encrypted_size as u64))
+            })?;
+            
+            match rows.next() {
+                Some(Ok((lp, es))) => (lp, es),
+                Some(Err(e)) => return Err(e),
+                None => return Err(rusqlite::Error::QueryReturnedNoRows),
+            }
+        };
+        
+        let meta = FileMetadata {
+            logical_path: logical_path.clone(),
+            encrypted_size,
+        };
+        
+        // Restaure dans l'index principal.
+        let hmac = self.compute_hmac(id, &logical_path, encrypted_size);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_index (id, logical_path, encrypted_size, hmac) VALUES (?1, ?2, ?3, ?4)",
+            params![id, logical_path, encrypted_size as i64, hmac.as_slice()],
+        )?;
+        
+        // Supprime de la corbeille.
+        self.conn.execute("DELETE FROM trash WHERE id = ?1", [id])?;
+        
+        // Met à jour le hash Merkle de l'index.
+        self.update_merkle_root()?;
+        
+        Ok(meta)
+    }
+
+    /// Liste tous les fichiers dans la corbeille.
+    pub fn list_trash(&self) -> SqliteResult<Vec<(FileId, FileMetadata, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, logical_path, encrypted_size, deleted_at, hmac FROM trash ORDER BY deleted_at DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let logical_path: String = row.get(1)?;
+            let encrypted_size: i64 = row.get(2)?;
+            let deleted_at: i64 = row.get(3)?;
+            let stored_hmac: Vec<u8> = row.get(4)?;
+            
+            // Vérifie le HMAC.
+            let computed_hmac = self.compute_hmac(&id, &logical_path, encrypted_size as u64);
+            if stored_hmac != computed_hmac.as_slice() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            
+            Ok((
+                id,
+                FileMetadata {
+                    logical_path,
+                    encrypted_size: encrypted_size as u64,
+                },
+                deleted_at,
+            ))
+        })?;
+        
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Supprime définitivement un fichier de la corbeille.
+    pub fn remove_from_trash(&mut self, id: &FileId) -> SqliteResult<()> {
+        self.conn.execute("DELETE FROM trash WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Vide complètement la corbeille.
+    pub fn empty_trash(&mut self) -> SqliteResult<usize> {
+        let count = self.conn.execute("DELETE FROM trash", [])?;
+        Ok(count)
     }
 
     pub fn len(&self) -> SqliteResult<usize> {

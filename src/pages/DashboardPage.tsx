@@ -25,8 +25,15 @@ type SortField = 'name' | 'size'
 type SortOrder = 'asc' | 'desc'
 type FileTypeFilter = 'all' | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'other'
 
+interface FolderInfo {
+  name: string
+  path: string
+}
+
 export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [files, setFiles] = useState<FileInfo[]>([])
+  const [folders, setFolders] = useState<FolderInfo[]>([])
+  const [currentPath, setCurrentPath] = useState<string>('/')
   const [isLoading, setIsLoading] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'warning' | 'info'; message: string } | null>(null)
@@ -44,6 +51,25 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   
   // États pour les statistiques
   const [userStats, setUserStats] = useState<{ total_files: number; total_size: number; files_by_type: Record<string, number> } | null>(null)
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [showRenameModal, setShowRenameModal] = useState(false)
+  const [fileToRename, setFileToRename] = useState<FileInfo | null>(null)
+  const [newFileName, setNewFileName] = useState('')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: FileInfo } | null>(null)
+  const [showTrash, setShowTrash] = useState(false)
+  const [trashItems, setTrashItems] = useState<Array<{ id: string; logical_path: string; encrypted_size: number; deleted_at: number }>>([])
+
+  // Ferme le menu contextuel avec la touche Escape
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape' && contextMenu) {
+        setContextMenu(null)
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [contextMenu])
 
   // Configuration automatique de Storj au chargement
   useEffect(() => {
@@ -90,12 +116,12 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     loadStorjConfig()
   }, [wayneClient])
 
-  // Chargement automatique des fichiers au montage
+  // Chargement automatique des fichiers au montage et lors du changement de chemin
   useEffect(() => {
     if (storjConfigured) {
       loadFiles()
     }
-  }, [storjConfigured])
+  }, [storjConfigured, currentPath])
 
   // Chargement des statistiques utilisateur
   useEffect(() => {
@@ -117,7 +143,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   // Pour l'instant, on utilise uniquement le sélecteur de fichier
   // TODO: Implémenter le drag & drop via l'API Tauri native quand elle sera disponible
 
-  // Chargement des fichiers depuis Storj avec retry
+  // Chargement des fichiers et dossiers depuis Storj (synchronisation) puis affichage depuis l'index local
   async function loadFiles() {
     setIsLoading(true)
     setStatus(null)
@@ -136,34 +162,25 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
             await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
           }
           
-          const storjFiles = await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
+          // Étape 1 : Synchronise depuis Storj (cela met à jour l'index local automatiquement)
+          await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
           
-          // Enrichir avec les métadonnées de l'index local
-          const enrichedFiles: FileInfo[] = await Promise.all(
-            storjFiles.map(async (file) => {
-              try {
-                // Récupère les métadonnées depuis l'index local si disponibles
-                const localFile = await invoke<{ id: string; logical_path: string; encrypted_size: number } | null>('index_get_file', {
-                  fileId: file.uuid,
-                })
-                
-                return {
-                  uuid: file.uuid,
-                  logical_path: localFile?.logical_path || file.logical_path,
-                  encrypted_size: localFile?.encrypted_size || file.encrypted_size || 0,
-                  file_id: localFile?.id,
-                } as FileInfo
-              } catch {
-                return {
-                  uuid: file.uuid,
-                  logical_path: file.logical_path,
-                  encrypted_size: file.encrypted_size || 0,
-                } as FileInfo
-              }
-            })
-          )
+          // Étape 2 : Utilise la nouvelle commande pour lister les fichiers et dossiers dans le chemin actuel depuis l'index local
+          const directory = await invoke<{ files: Array<{ id: string; logical_path: string; encrypted_size: number }>; folders: FolderInfo[] }>('list_files_and_folders', {
+            parentPath: currentPath === '/' ? null : currentPath,
+          })
+          
+          // Convertit les fichiers en FileInfo
+          const enrichedFiles: FileInfo[] = directory.files.map((file) => ({
+            uuid: file.id,
+            logical_path: file.logical_path,
+            encrypted_size: file.encrypted_size,
+            file_id: file.id,
+          }))
           
           setFiles(enrichedFiles)
+          setFolders(directory.folders)
+          
           if (attempts > 1) {
             setStatus({ type: 'success', message: `✅ Fichiers chargés avec succès (tentative ${attempts})` })
           } else {
@@ -189,6 +206,293 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       }
     } finally {
       // S'assure que isLoading est toujours réinitialisé
+      setIsLoading(false)
+    }
+  }
+  
+  // Navigation dans un dossier
+  function navigateToFolder(folderPath: string) {
+    setCurrentPath(folderPath)
+  }
+  
+  // Navigation vers le dossier parent
+  function navigateToParent() {
+    if (currentPath === '/') return
+    const pathParts = currentPath.split('/').filter(p => p)
+    pathParts.pop()
+    const newPath = pathParts.length === 0 ? '/' : '/' + pathParts.join('/')
+    setCurrentPath(newPath)
+  }
+  
+  // Génère le breadcrumb (chemin de navigation)
+  function getBreadcrumbs(): Array<{ name: string; path: string }> {
+    if (currentPath === '/') {
+      return [{ name: 'Racine', path: '/' }]
+    }
+    const parts = currentPath.split('/').filter(p => p)
+    const breadcrumbs = [{ name: 'Racine', path: '/' }]
+    let current = ''
+    for (const part of parts) {
+      current += '/' + part
+      breadcrumbs.push({ name: part, path: current })
+    }
+    return breadcrumbs
+  }
+  
+  // Renomme un fichier
+  async function handleRename(file: FileInfo) {
+    if (!file.logical_path) {
+      setStatus({ type: 'error', message: 'Chemin logique non disponible pour ce fichier.' })
+      return
+    }
+
+    setFileToRename(file)
+    const currentName = file.logical_path.split('/').pop() || ''
+    setNewFileName(currentName)
+    setShowRenameModal(true)
+  }
+
+  async function confirmRename() {
+    if (!fileToRename || !fileToRename.logical_path || !newFileName.trim()) {
+      setStatus({ type: 'error', message: 'Nom de fichier invalide.' })
+      return
+    }
+
+    setIsLoading(true)
+    setStatus({ type: 'info', message: `Renommage de "${fileToRename.logical_path.split('/').pop()}"...` })
+
+    try {
+      // Construit le nouveau chemin logique
+      const oldPath = fileToRename.logical_path
+      const pathParts = oldPath.split('/')
+      pathParts[pathParts.length - 1] = newFileName.trim()
+      const newPath = pathParts.join('/')
+
+      // Appelle la commande Tauri pour renommer
+      await invoke<string>('rename_file', {
+        oldLogicalPath: oldPath,
+        newLogicalPath: newPath,
+      })
+
+      setStatus({ type: 'success', message: `✅ Fichier renommé avec succès : "${newFileName.trim()}"` })
+      setShowRenameModal(false)
+      setFileToRename(null)
+      setNewFileName('')
+
+      // Recharge la liste des fichiers
+      console.log('🔄 Rechargement des fichiers après renommage...')
+      try {
+        await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
+        const directory = await invoke<{ files: Array<{ id: string; logical_path: string; encrypted_size: number }>; folders: FolderInfo[] }>('list_files_and_folders', {
+          parentPath: currentPath === '/' ? null : currentPath,
+        })
+        const enrichedFiles: FileInfo[] = directory.files.map((file) => ({
+          uuid: file.id,
+          logical_path: file.logical_path,
+          encrypted_size: file.encrypted_size,
+          file_id: file.id,
+        }))
+        setFiles(enrichedFiles)
+        setFolders(directory.folders)
+        console.log('✅ Fichiers rechargés après renommage')
+      } catch (e) {
+        console.error('❌ Erreur lors du rechargement:', e)
+        await loadFiles()
+      }
+
+      // Met à jour les métadonnées Wayne si nécessaire
+      if (wayneClient && wayneClient.getAccessToken()) {
+        try {
+          const statsResponse = await wayneClient.getUserStats()
+          setUserStats(statsResponse.stats)
+        } catch (metadataError) {
+          console.warn('⚠️ Erreur lors de la mise à jour des métadonnées:', metadataError)
+        }
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `❌ Erreur lors du renommage: ${errorMsg}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Charge la corbeille
+  async function loadTrash() {
+    setIsLoading(true)
+    setStatus(null)
+    
+    try {
+      const items = await invoke<Array<{ id: string; logical_path: string; encrypted_size: number; deleted_at: number }>>('list_trash')
+      setTrashItems(items)
+      console.log('✅ Corbeille chargée:', items.length, 'éléments')
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors du chargement de la corbeille: ${errorMsg}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Restaure un fichier depuis la corbeille
+  async function handleRestoreFromTrash(fileId: string) {
+    setIsLoading(true)
+    setStatus({ type: 'info', message: 'Restauration du fichier...' })
+    
+    try {
+      await invoke<string>('restore_from_trash', { fileId })
+      setStatus({ type: 'success', message: '✅ Fichier restauré avec succès' })
+      await loadTrash() // Recharge la corbeille
+      await loadFiles() // Recharge les fichiers
+      
+      // Met à jour les métadonnées Wayne si nécessaire
+      if (wayneClient && wayneClient.getAccessToken()) {
+        try {
+          const statsResponse = await wayneClient.getUserStats()
+          setUserStats(statsResponse.stats)
+        } catch (metadataError) {
+          console.warn('⚠️ Erreur lors de la mise à jour des métadonnées:', metadataError)
+        }
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors de la restauration: ${errorMsg}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Supprime définitivement un fichier de la corbeille
+  async function handlePermanentlyDelete(fileId: string, fileName: string) {
+    if (!confirm(`Es-tu sûr de vouloir supprimer définitivement "${fileName}" ? Cette action est irréversible.`)) {
+      return
+    }
+
+    setIsLoading(true)
+    setStatus({ type: 'info', message: `Suppression définitive de "${fileName}"...` })
+    
+    try {
+      await invoke('permanently_delete_from_trash', { fileId })
+      setStatus({ type: 'success', message: `✅ Fichier "${fileName}" supprimé définitivement` })
+      await loadTrash() // Recharge la corbeille
+      
+      // Met à jour les métadonnées Wayne si nécessaire
+      if (wayneClient && wayneClient.getAccessToken()) {
+        try {
+          await wayneClient.deleteFileMetadata(fileId)
+          const statsResponse = await wayneClient.getUserStats()
+          setUserStats(statsResponse.stats)
+        } catch (metadataError) {
+          console.warn('⚠️ Erreur lors de la mise à jour des métadonnées:', metadataError)
+        }
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors de la suppression définitive: ${errorMsg}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Vide complètement la corbeille
+  async function handleEmptyTrash() {
+    if (!confirm(`Es-tu sûr de vouloir vider complètement la corbeille ? Tous les fichiers seront supprimés définitivement. Cette action est irréversible.`)) {
+      return
+    }
+
+    setIsLoading(true)
+    setStatus({ type: 'info', message: 'Vidage de la corbeille...' })
+    
+    try {
+      const count = await invoke<number>('empty_trash')
+      setStatus({ type: 'success', message: `✅ Corbeille vidée : ${count} fichier(s) supprimé(s) définitivement` })
+      await loadTrash() // Recharge la corbeille (devrait être vide maintenant)
+      
+      // Met à jour les métadonnées Wayne si nécessaire
+      if (wayneClient && wayneClient.getAccessToken()) {
+        try {
+          // Supprime toutes les métadonnées des fichiers supprimés
+          // Note: On pourrait optimiser en supprimant toutes les métadonnées d'un coup
+          const statsResponse = await wayneClient.getUserStats()
+          setUserStats(statsResponse.stats)
+        } catch (metadataError) {
+          console.warn('⚠️ Erreur lors de la mise à jour des métadonnées:', metadataError)
+        }
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors du vidage de la corbeille: ${errorMsg}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Formate la date de suppression
+  function formatDeletedDate(timestamp: number): string {
+    const date = new Date(timestamp * 1000) // Convertit les secondes en millisecondes
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    
+    if (diffDays === 0) {
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+      if (diffHours === 0) {
+        const diffMinutes = Math.floor(diffMs / (1000 * 60))
+        return `Il y a ${diffMinutes} minute${diffMinutes > 1 ? 's' : ''}`
+      }
+      return `Il y a ${diffHours} heure${diffHours > 1 ? 's' : ''}`
+    } else if (diffDays === 1) {
+      return 'Hier'
+    } else if (diffDays < 7) {
+      return `Il y a ${diffDays} jour${diffDays > 1 ? 's' : ''}`
+    } else {
+      return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
+    }
+  }
+
+  // Crée un nouveau dossier
+  async function handleCreateFolder() {
+    if (!newFolderName.trim()) {
+      setStatus({ type: 'error', message: 'Le nom du dossier ne peut pas être vide' })
+      return
+    }
+    
+    setIsLoading(true)
+    setStatus(null)
+    
+    try {
+      const folderPath = await invoke<string>('create_folder', {
+        folderName: newFolderName.trim(),
+        parentPath: currentPath === '/' ? null : currentPath,
+      })
+      
+      setStatus({ type: 'success', message: `✅ Dossier "${newFolderName.trim()}" créé avec succès` })
+      setShowCreateFolderModal(false)
+      setNewFolderName('')
+      // Recharge directement depuis l'index local (pas besoin de synchroniser Storj pour un dossier vide)
+      console.log('🔄 Rechargement des fichiers après création de dossier...')
+      try {
+        const directory = await invoke<{ files: Array<{ id: string; logical_path: string; encrypted_size: number }>; folders: FolderInfo[] }>('list_files_and_folders', {
+          parentPath: currentPath === '/' ? null : currentPath,
+        })
+        const enrichedFiles: FileInfo[] = directory.files.map((file) => ({
+          uuid: file.id,
+          logical_path: file.logical_path,
+          encrypted_size: file.encrypted_size,
+          file_id: file.id,
+        }))
+        setFiles(enrichedFiles)
+        setFolders(directory.folders)
+        console.log('✅ Fichiers rechargés après création de dossier:', { files: enrichedFiles.length, folders: directory.folders.length })
+      } catch (e) {
+        console.error('❌ Erreur lors du rechargement:', e)
+        // Si ça échoue, on fait un loadFiles complet
+        await loadFiles()
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      setStatus({ type: 'error', message: `Erreur lors de la création du dossier: ${errorMsg}` })
+    } finally {
       setIsLoading(false)
     }
   }
@@ -222,8 +526,8 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           const fileData = await file.arrayBuffer()
           const fileArray = Array.from(new Uint8Array(fileData))
 
-          // Génère automatiquement le chemin logique depuis le nom du fichier
-          const logicalPath = `/${file.name}`
+          // Génère automatiquement le chemin logique depuis le nom du fichier dans le dossier actuel
+          const logicalPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`
 
           setStatus({ type: 'info', message: `🔐 Chiffrement de "${file.name}"...` })
 
@@ -270,8 +574,28 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
 
           setStatus({ type: 'success', message: `✅ Fichier "${file.name}" uploadé avec succès` })
           
-          // Recharge la liste des fichiers
-          await loadFiles()
+          // Recharge la liste des fichiers (force le rechargement complet depuis Storj)
+          console.log('🔄 Rechargement des fichiers après upload...')
+          try {
+            // Synchronise depuis Storj puis recharge depuis l'index local
+            await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
+            const directory = await invoke<{ files: Array<{ id: string; logical_path: string; encrypted_size: number }>; folders: FolderInfo[] }>('list_files_and_folders', {
+              parentPath: currentPath === '/' ? null : currentPath,
+            })
+            const enrichedFiles: FileInfo[] = directory.files.map((file) => ({
+              uuid: file.id,
+              logical_path: file.logical_path,
+              encrypted_size: file.encrypted_size,
+              file_id: file.id,
+            }))
+            setFiles(enrichedFiles)
+            setFolders(directory.folders)
+            console.log('✅ Fichiers rechargés après upload:', { files: enrichedFiles.length, folders: directory.folders.length })
+          } catch (e) {
+            console.error('❌ Erreur lors du rechargement:', e)
+            // Si ça échoue, on fait un loadFiles complet
+            await loadFiles()
+          }
           return
         } catch (e) {
           const errorMsg = e instanceof Error ? e.message : String(e)
@@ -625,6 +949,29 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           {wayneClient && wayneClient.getAccessToken() && (
             <Button
               variant="secondary"
+              onClick={() => {
+                setShowTrash(!showTrash)
+                if (!showTrash) {
+                  loadTrash()
+                }
+              }}
+              style={{ marginRight: '0.75rem' }}
+            >
+              {showTrash ? '📁 Mes fichiers' : '🗑️ Corbeille'}
+            </Button>
+          )}
+          {wayneClient && wayneClient.getAccessToken() && !showTrash && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowCreateFolderModal(true)}
+              style={{ marginRight: '0.75rem' }}
+            >
+              ➕ Créer un dossier
+            </Button>
+          )}
+          {wayneClient && wayneClient.getAccessToken() && (
+            <Button
+              variant="secondary"
               onClick={() => setShowSettings(true)}
               style={{ marginRight: '0.75rem' }}
             >
@@ -703,7 +1050,180 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
         </Card>
 
         {/* Tableau de fichiers */}
-        <Card title="Mes fichiers">
+        {showTrash ? (
+          <Card title="🗑️ Corbeille">
+            {trashItems.length === 0 ? (
+              <div className="empty-state" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary, #666)' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗑️</div>
+                <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>La corbeille est vide</p>
+                <p style={{ fontSize: '0.9rem' }}>Les fichiers que tu supprimes apparaîtront ici.</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
+                    {trashItems.length} fichier{trashItems.length > 1 ? 's' : ''} dans la corbeille
+                  </div>
+                  <Button
+                    variant="danger"
+                    onClick={handleEmptyTrash}
+                    disabled={isLoading}
+                    style={{ marginLeft: 'auto' }}
+                  >
+                    🗑️ Vider la corbeille
+                  </Button>
+                </div>
+                <div className="files-table-container" style={{ overflowX: 'auto' }}>
+                  <table className="files-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid var(--border, #ddd)' }}>
+                        <th style={{ textAlign: 'left', padding: '0.75rem', fontWeight: '600', color: 'var(--text-secondary, #666)' }}>Type</th>
+                        <th style={{ textAlign: 'left', padding: '0.75rem', fontWeight: '600', color: 'var(--text-secondary, #666)' }}>Nom</th>
+                        <th style={{ textAlign: 'right', padding: '0.75rem', fontWeight: '600', color: 'var(--text-secondary, #666)' }}>Taille</th>
+                        <th style={{ textAlign: 'left', padding: '0.75rem', fontWeight: '600', color: 'var(--text-secondary, #666)' }}>Supprimé le</th>
+                        <th style={{ textAlign: 'center', padding: '0.75rem', fontWeight: '600', color: 'var(--text-secondary, #666)' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trashItems.map((item) => {
+                        const fileName = item.logical_path.split('/').pop() || item.id
+                        return (
+                          <tr
+                            key={item.id}
+                            style={{ borderBottom: '1px solid var(--border, #eee)', transition: 'background 0.2s' }}
+                            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                          >
+                            <td style={{ padding: '0.75rem', fontSize: '1.5rem' }}>{getFileIcon(fileName)}</td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <div>
+                                <div style={{ fontWeight: '500' }}>{fileName}</div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary, #666)', marginTop: '0.25rem' }}>
+                                  {getFileType(fileName)}
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary, #666)' }}>
+                              {formatSize(item.encrypted_size || 0)}
+                            </td>
+                            <td style={{ padding: '0.75rem', color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
+                              {formatDeletedDate(item.deleted_at)}
+                            </td>
+                            <td style={{ padding: '0.75rem', textAlign: 'center' }}>
+                              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                                <button
+                                  onClick={() => handleRestoreFromTrash(item.id)}
+                                  disabled={isLoading}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontSize: '1.2rem',
+                                    padding: '0.5rem',
+                                    borderRadius: '4px',
+                                    transition: 'background 0.2s',
+                                    opacity: isLoading ? 0.5 : 1,
+                                  }}
+                                  onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                  title="Restaurer"
+                                >
+                                  ♻️
+                                </button>
+                                <button
+                                  onClick={() => handlePermanentlyDelete(item.id, fileName)}
+                                  disabled={isLoading}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontSize: '1.2rem',
+                                    padding: '0.5rem',
+                                    borderRadius: '4px',
+                                    transition: 'background 0.2s',
+                                    opacity: isLoading ? 0.5 : 1,
+                                    color: 'var(--danger, #dc3545)',
+                                  }}
+                                  onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                  title="Supprimer définitivement"
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </Card>
+        ) : (
+          <Card title="Mes fichiers">
+          {/* Bouton créer dossier */}
+          <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+            <Button
+              variant="primary"
+              onClick={() => setShowCreateFolderModal(true)}
+            >
+              ➕ Créer un dossier
+            </Button>
+          </div>
+          
+          {/* Breadcrumb de navigation */}
+          <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {getBreadcrumbs().map((crumb, index) => (
+              <div key={crumb.path} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {index > 0 && <span style={{ color: 'var(--text-secondary, #666)' }}>/</span>}
+                <button
+                  onClick={() => navigateToFolder(crumb.path)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: index === getBreadcrumbs().length - 1 ? 'var(--primary, #007bff)' : 'var(--text-primary, #333)',
+                    fontWeight: index === getBreadcrumbs().length - 1 ? '600' : '400',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    transition: 'background 0.2s',
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                >
+                  {crumb.name}
+                </button>
+              </div>
+            ))}
+            {currentPath !== '/' && (
+              <button
+                onClick={navigateToParent}
+                style={{
+                  marginLeft: 'auto',
+                  background: 'var(--bg-secondary, #f5f5f5)',
+                  border: '1px solid var(--border, #ddd)',
+                  cursor: 'pointer',
+                  padding: '0.5rem 1rem',
+                  borderRadius: '6px',
+                  fontSize: '0.9rem',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--primary, #007bff)'
+                  e.currentTarget.style.color = 'white'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                  e.currentTarget.style.color = 'inherit'
+                }}
+              >
+                ⬅️ Retour
+              </button>
+            )}
+          </div>
+          
           {/* Contrôles de recherche, tri et filtrage */}
           <div style={{ marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {/* Barre de recherche */}
@@ -797,12 +1317,13 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                     fontSize: '0.85rem',
                     border: '1px solid var(--border, #ddd)',
                     borderRadius: '6px',
-                    background: 'white',
+                    background: 'var(--bg-primary, white)',
+                    color: 'var(--text-primary, #333)',
                     cursor: 'pointer',
                   }}
                 >
-                  <option value="name">Nom</option>
-                  <option value="size">Taille</option>
+                  <option value="name" style={{ background: 'var(--bg-primary, white)', color: 'var(--text-primary, #333)' }}>Nom</option>
+                  <option value="size" style={{ background: 'var(--bg-primary, white)', color: 'var(--text-primary, #333)' }}>Taille</option>
                 </select>
                 <button
                   onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
@@ -811,8 +1332,10 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                     fontSize: '0.85rem',
                     border: '1px solid var(--border, #ddd)',
                     borderRadius: '6px',
-                    background: 'white',
+                    background: 'var(--bg-primary, white)',
+                    color: 'var(--text-primary, #333)',
                     cursor: 'pointer',
+                    transition: 'all 0.2s',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.25rem',
@@ -828,7 +1351,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           {/* Compteur de résultats */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <p style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
-              {filteredAndSortedFiles.length} fichier{filteredAndSortedFiles.length > 1 ? 's' : ''} 
+              {folders.length} dossier{folders.length > 1 ? 's' : ''}, {filteredAndSortedFiles.length} fichier{filteredAndSortedFiles.length > 1 ? 's' : ''} 
               {searchQuery || fileTypeFilter !== 'all' ? ` (sur ${files.length} au total)` : ''}
             </p>
           </div>
@@ -874,10 +1397,66 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                   </tr>
                 </thead>
                 <tbody>
+                  {/* Affiche d'abord les dossiers */}
+                  {folders.map((folder) => (
+                    <tr 
+                      key={folder.path} 
+                      style={{ borderBottom: '1px solid var(--border, #eee)', transition: 'background 0.2s', cursor: 'pointer' }} 
+                      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'} 
+                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      onClick={() => navigateToFolder(folder.path)}
+                    >
+                      <td style={{ padding: '0.75rem', fontSize: '1.5rem' }}>📁</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div>
+                          <div style={{ fontWeight: '500' }}>{folder.name}</div>
+                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary, #666)', marginTop: '0.25rem' }}>
+                            Dossier
+                          </div>
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary, #666)' }}>
+                        —
+                      </td>
+                      <td style={{ padding: '0.75rem', textAlign: 'center' }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigateToFolder(folder.path)
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '1.2rem',
+                            padding: '0.5rem',
+                            borderRadius: '4px',
+                            transition: 'background 0.2s',
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                          title="Ouvrir le dossier"
+                        >
+                          ➡️
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {/* Puis les fichiers */}
                   {filteredAndSortedFiles.map((file) => {
                     const fileName = file.logical_path?.split('/').pop() || file.uuid
                     return (
-                      <tr key={file.uuid} style={{ borderBottom: '1px solid var(--border, #eee)', transition: 'background 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'} onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                      <tr 
+                        key={file.uuid} 
+                        style={{ borderBottom: '1px solid var(--border, #eee)', transition: 'background 0.2s' }} 
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'} 
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setContextMenu({ x: e.clientX, y: e.clientY, file })
+                        }}
+                      >
                         <td style={{ padding: '0.75rem', fontSize: '1.5rem' }}>{getFileIcon(fileName)}</td>
                         <td style={{ padding: '0.75rem' }}>
                           <div>
@@ -892,6 +1471,28 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'center' }}>
                           <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleRename(file)
+                              }}
+                              disabled={isLoading || !file.logical_path}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: '1.2rem',
+                                padding: '0.5rem',
+                                borderRadius: '4px',
+                                transition: 'background 0.2s',
+                                opacity: (!file.logical_path || isLoading) ? 0.5 : 1,
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              title="Renommer"
+                            >
+                              ✏️
+                            </button>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -957,6 +1558,446 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
             onLogout()
           }}
         />
+      )}
+      
+      {/* Menu contextuel */}
+      {contextMenu && (
+        <>
+          {/* Overlay pour fermer le menu au clic */}
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              zIndex: 999,
+            }}
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setContextMenu(null)
+            }}
+          />
+          {/* Menu contextuel */}
+          <div
+            style={{
+              position: 'fixed',
+              top: contextMenu.y,
+              left: contextMenu.x,
+              background: 'var(--bg-primary, white)',
+              border: '1px solid var(--border, #ddd)',
+              borderRadius: '8px',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+              zIndex: 1000,
+              minWidth: '180px',
+              padding: '0.5rem 0',
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+          >
+            <button
+              onClick={() => {
+                handleRename(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading || !contextMenu.file.logical_path}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading || !contextMenu.file.logical_path ? 'not-allowed' : 'pointer',
+                color: isLoading || !contextMenu.file.logical_path ? 'var(--text-secondary, #999)' : 'var(--text-primary, #333)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading && contextMenu.file.logical_path) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>✏️</span>
+              <span>Renommer</span>
+            </button>
+            <button
+              onClick={() => {
+                handleDownload(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading || !contextMenu.file.logical_path}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading || !contextMenu.file.logical_path ? 'not-allowed' : 'pointer',
+                color: isLoading || !contextMenu.file.logical_path ? 'var(--text-secondary, #999)' : 'var(--text-primary, #333)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading && contextMenu.file.logical_path) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>📥</span>
+              <span>Télécharger</span>
+            </button>
+            <div style={{ height: '1px', background: 'var(--border, #ddd)', margin: '0.5rem 0' }} />
+            <button
+              onClick={() => {
+                handleDelete(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                color: isLoading ? 'var(--text-secondary, #999)' : 'var(--danger, #dc3545)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>🗑️</span>
+              <span>Supprimer</span>
+            </button>
+          </div>
+        <        />
+      )}
+
+      {/* Menu contextuel */}
+      {contextMenu && (
+        <>
+          {/* Overlay pour fermer le menu au clic */}
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              zIndex: 999,
+            }}
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setContextMenu(null)
+            }}
+          />
+          {/* Menu contextuel */}
+          <div
+            style={{
+              position: 'fixed',
+              top: contextMenu.y,
+              left: contextMenu.x,
+              background: 'var(--bg-primary, white)',
+              border: '1px solid var(--border, #ddd)',
+              borderRadius: '8px',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+              zIndex: 1000,
+              minWidth: '180px',
+              padding: '0.5rem 0',
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+          >
+            <button
+              onClick={() => {
+                handleRename(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading || !contextMenu.file.logical_path}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading || !contextMenu.file.logical_path ? 'not-allowed' : 'pointer',
+                color: isLoading || !contextMenu.file.logical_path ? 'var(--text-secondary, #999)' : 'var(--text-primary, #333)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading && contextMenu.file.logical_path) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>✏️</span>
+              <span>Renommer</span>
+            </button>
+            <button
+              onClick={() => {
+                handleDownload(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading || !contextMenu.file.logical_path}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading || !contextMenu.file.logical_path ? 'not-allowed' : 'pointer',
+                color: isLoading || !contextMenu.file.logical_path ? 'var(--text-secondary, #999)' : 'var(--text-primary, #333)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading && contextMenu.file.logical_path) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>📥</span>
+              <span>Télécharger</span>
+            </button>
+            <div style={{ height: '1px', background: 'var(--border, #ddd)', margin: '0.5rem 0' }} />
+            <button
+              onClick={() => {
+                handleDelete(contextMenu.file)
+                setContextMenu(null)
+              }}
+              disabled={isLoading}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                background: 'transparent',
+                border: 'none',
+                textAlign: 'left',
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                color: isLoading ? 'var(--text-secondary, #999)' : 'var(--danger, #dc3545)',
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                transition: 'background 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <span>🗑️</span>
+              <span>Supprimer</span>
+            </button>
+          </div>
+        </>
+      )}
+      
+      {/* Modal de renommage de fichier */}
+      {showRenameModal && fileToRename && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => {
+            setShowRenameModal(false)
+            setFileToRename(null)
+            setNewFileName('')
+          }}
+        >
+          <div
+            style={{
+              background: 'var(--bg-primary, white)',
+              padding: '2rem',
+              borderRadius: '12px',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.2)',
+              width: '90%',
+              maxWidth: '400px',
+              color: 'var(--text-primary, #333)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: '1.5rem', color: 'var(--text-primary, #333)' }}>
+              Renommer le fichier
+            </h2>
+            <input
+              type="text"
+              placeholder="Nouveau nom du fichier"
+              value={newFileName}
+              onChange={(e) => setNewFileName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  confirmRename()
+                } else if (e.key === 'Escape') {
+                  setShowRenameModal(false)
+                  setFileToRename(null)
+                  setNewFileName('')
+                }
+              }}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                fontSize: '1rem',
+                border: '1px solid var(--border, #ddd)',
+                borderRadius: '8px',
+                marginBottom: '1rem',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowRenameModal(false)
+                  setFileToRename(null)
+                  setNewFileName('')
+                }}
+              >
+                Annuler
+              </Button>
+              <Button variant="primary" onClick={confirmRename} disabled={isLoading || !newFileName.trim()}>
+                Renommer
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de création de dossier */}
+      {showCreateFolderModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => setShowCreateFolderModal(false)}
+        >
+          <div
+            style={{
+              background: 'var(--bg-primary, white)',
+              padding: '2rem',
+              borderRadius: '12px',
+              minWidth: '400px',
+              maxWidth: '90%',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: '1.5rem' }}>Créer un nouveau dossier</h2>
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
+                Nom du dossier
+              </label>
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCreateFolder()
+                  } else if (e.key === 'Escape') {
+                    setShowCreateFolderModal(false)
+                    setNewFolderName('')
+                  }
+                }}
+                placeholder="Nom du dossier"
+                autoFocus
+                style={{
+                  width: '100%',
+                  padding: '0.75rem',
+                  fontSize: '1rem',
+                  border: '2px solid var(--border, #ddd)',
+                  borderRadius: '8px',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowCreateFolderModal(false)
+                  setNewFolderName('')
+                }}
+                disabled={isLoading}
+              >
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleCreateFolder}
+                loading={isLoading}
+                disabled={isLoading || !newFolderName.trim()}
+              >
+                Créer
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       <style>{`
