@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { Card } from '../components/Card'
 import { Button } from '../components/Button'
 import { StatusMessage } from '../components/StatusMessage'
@@ -22,6 +21,10 @@ interface DashboardPageProps {
   onLogout: () => void
 }
 
+type SortField = 'name' | 'size'
+type SortOrder = 'asc' | 'desc'
+type FileTypeFilter = 'all' | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'other'
+
 export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [files, setFiles] = useState<FileInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -32,6 +35,12 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
+  
+  // États pour recherche, tri et filtrage
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState<SortField>('name')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const [fileTypeFilter, setFileTypeFilter] = useState<FileTypeFilter>('all')
 
   // Configuration automatique de Storj au chargement
   useEffect(() => {
@@ -353,6 +362,64 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     return ext
   }
 
+  // Obtient la catégorie de fichier pour le filtrage
+  function getFileCategory(fileName: string): FileTypeFilter {
+    const ext = fileName.split('.').pop()?.toLowerCase() || ''
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico']
+    const docExts = ['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt', 'xls', 'xlsx', 'ppt', 'pptx']
+    const videoExts = ['mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mkv', 'm4v']
+    const audioExts = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a']
+    const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz']
+    
+    if (imageExts.includes(ext)) return 'images'
+    if (docExts.includes(ext)) return 'documents'
+    if (videoExts.includes(ext)) return 'videos'
+    if (audioExts.includes(ext)) return 'audio'
+    if (archiveExts.includes(ext)) return 'archives'
+    return 'other'
+  }
+
+  // Filtre et trie les fichiers
+  const filteredAndSortedFiles = (() => {
+    let result = [...files]
+
+    // Filtrage par recherche
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      result = result.filter(file => {
+        const fileName = file.logical_path?.split('/').pop() || file.uuid
+        return fileName.toLowerCase().includes(query)
+      })
+    }
+
+    // Filtrage par type
+    if (fileTypeFilter !== 'all') {
+      result = result.filter(file => {
+        const fileName = file.logical_path?.split('/').pop() || file.uuid
+        return getFileCategory(fileName) === fileTypeFilter
+      })
+    }
+
+    // Tri
+    result.sort((a, b) => {
+      let comparison = 0
+      
+      if (sortBy === 'name') {
+        const nameA = (a.logical_path?.split('/').pop() || a.uuid).toLowerCase()
+        const nameB = (b.logical_path?.split('/').pop() || b.uuid).toLowerCase()
+        comparison = nameA.localeCompare(nameB)
+      } else if (sortBy === 'size') {
+        const sizeA = a.encrypted_size || 0
+        const sizeB = b.encrypted_size || 0
+        comparison = sizeA - sizeB
+      }
+      
+      return sortOrder === 'asc' ? comparison : -comparison
+    })
+
+    return result
+  })()
+
   return (
     <div className="dashboard-page">
       <div className="dashboard-header">
@@ -443,13 +510,133 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
 
         {/* Tableau de fichiers */}
         <Card title="Mes fichiers">
+          {/* Contrôles de recherche, tri et filtrage */}
+          <div style={{ marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {/* Barre de recherche */}
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <div style={{ position: 'relative', flex: 1 }}>
+                <input
+                  type="text"
+                  placeholder="🔍 Rechercher un fichier..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '0.75rem 1rem',
+                    paddingLeft: '2.5rem',
+                    fontSize: '0.95rem',
+                    border: '2px solid var(--border, #ddd)',
+                    borderRadius: '8px',
+                    transition: 'border-color 0.2s',
+                  }}
+                  onFocus={(e) => e.currentTarget.style.borderColor = 'var(--primary, #007bff)'}
+                  onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border, #ddd)'}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    style={{
+                      position: 'absolute',
+                      right: '0.5rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '1.2rem',
+                      padding: '0.25rem',
+                    }}
+                    title="Effacer la recherche"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <Button variant="secondary" onClick={loadFiles} loading={isLoading} disabled={isLoading || !storjConfigured}>
+                🔄 Actualiser
+              </Button>
+            </div>
+
+            {/* Filtres par type et tri */}
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              {/* Filtres par type */}
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem', marginRight: '0.25rem' }}>Type:</span>
+                {(['all', 'images', 'documents', 'videos', 'audio', 'archives', 'other'] as FileTypeFilter[]).map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => setFileTypeFilter(type)}
+                    style={{
+                      padding: '0.5rem 0.75rem',
+                      fontSize: '0.85rem',
+                      border: '1px solid var(--border, #ddd)',
+                      borderRadius: '6px',
+                      background: fileTypeFilter === type ? 'var(--primary, #007bff)' : 'transparent',
+                      color: fileTypeFilter === type ? 'white' : 'var(--text-primary, #333)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (fileTypeFilter !== type) {
+                        e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (fileTypeFilter !== type) {
+                        e.currentTarget.style.background = 'transparent'
+                      }
+                    }}
+                  >
+                    {type === 'all' ? 'Tous' : type === 'images' ? '🖼️ Images' : type === 'documents' ? '📄 Documents' : type === 'videos' ? '🎬 Vidéos' : type === 'audio' ? '🎵 Audio' : type === 'archives' ? '📦 Archives' : '📁 Autres'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tri */}
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginLeft: 'auto' }}>
+                <span style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>Trier par:</span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortField)}
+                  style={{
+                    padding: '0.5rem 0.75rem',
+                    fontSize: '0.85rem',
+                    border: '1px solid var(--border, #ddd)',
+                    borderRadius: '6px',
+                    background: 'white',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="name">Nom</option>
+                  <option value="size">Taille</option>
+                </select>
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  style={{
+                    padding: '0.5rem 0.75rem',
+                    fontSize: '0.85rem',
+                    border: '1px solid var(--border, #ddd)',
+                    borderRadius: '6px',
+                    background: 'white',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.25rem',
+                  }}
+                  title={sortOrder === 'asc' ? 'Tri croissant' : 'Tri décroissant'}
+                >
+                  {sortOrder === 'asc' ? '↑' : '↓'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Compteur de résultats */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <p style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
-              {files.length} fichier{files.length > 1 ? 's' : ''}
+              {filteredAndSortedFiles.length} fichier{filteredAndSortedFiles.length > 1 ? 's' : ''} 
+              {searchQuery || fileTypeFilter !== 'all' ? ` (sur ${files.length} au total)` : ''}
             </p>
-            <Button variant="secondary" onClick={loadFiles} loading={isLoading} disabled={isLoading || !storjConfigured}>
-              🔄 Actualiser
-            </Button>
           </div>
 
           {!storjConfigured ? (
@@ -463,6 +650,24 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
               <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Aucun fichier</p>
               <p style={{ fontSize: '0.9rem' }}>Commence par uploader un fichier ci-dessus</p>
             </div>
+          ) : filteredAndSortedFiles.length === 0 ? (
+            <div className="empty-state" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary, #666)' }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔍</div>
+              <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Aucun fichier trouvé</p>
+              <p style={{ fontSize: '0.9rem' }}>
+                {searchQuery ? `Aucun fichier ne correspond à "${searchQuery}"` : `Aucun fichier de type "${fileTypeFilter}"`}
+              </p>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setSearchQuery('')
+                  setFileTypeFilter('all')
+                }}
+                style={{ marginTop: '1rem' }}
+              >
+                Réinitialiser les filtres
+              </Button>
+            </div>
           ) : (
             <div className="files-table-container" style={{ overflowX: 'auto' }}>
               <table className="files-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -475,7 +680,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {files.map((file) => {
+                  {filteredAndSortedFiles.map((file) => {
                     const fileName = file.logical_path?.split('/').pop() || file.uuid
                     return (
                       <tr key={file.uuid} style={{ borderBottom: '1px solid var(--border, #eee)', transition: 'background 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'} onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
