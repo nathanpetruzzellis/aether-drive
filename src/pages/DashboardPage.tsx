@@ -171,23 +171,54 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   function handleDragOver(e: React.DragEvent) {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragging(true)
+    e.dataTransfer.dropEffect = 'copy'
+    if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('application/x-moz-file')) {
+      setIsDragging(true)
+    }
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'copy'
+    console.log('Drag enter, types:', e.dataTransfer.types)
+    if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('application/x-moz-file')) {
+      setIsDragging(true)
+    }
   }
 
   function handleDragLeave(e: React.DragEvent) {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragging(false)
+    // Ne désactive le drag que si on quitte vraiment la zone (pas juste un enfant)
+    const rect = dropZoneRef.current?.getBoundingClientRect()
+    if (rect) {
+      const x = e.clientX
+      const y = e.clientY
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+        setIsDragging(false)
+      }
+    } else {
+      setIsDragging(false)
+    }
   }
 
-  function handleDrop(e: React.DragEvent) {
+  async function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     e.stopPropagation()
     setIsDragging(false)
 
+    console.log('Drop event:', e.dataTransfer.files.length, 'files')
+    
     const droppedFiles = Array.from(e.dataTransfer.files)
+    console.log('Dropped files:', droppedFiles.map(f => f.name))
+    
     if (droppedFiles.length > 0) {
-      handleFileUpload(droppedFiles[0])
+      console.log('Processing file:', droppedFiles[0].name)
+      await handleFileUpload(droppedFiles[0])
+    } else {
+      console.warn('No files in drop event')
+      setStatus({ type: 'error', message: 'Aucun fichier détecté dans le glisser-déposer' })
     }
   }
 
@@ -354,10 +385,17 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           <div
             ref={dropZoneRef}
             className={`upload-zone ${isDragging ? 'dragging' : ''}`}
+            onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={handleFileSelect}
+            onClick={(e) => {
+              // Ne déclenche le sélecteur que si on n'est pas en train de drag & drop
+              if (!isDragging) {
+                e.stopPropagation()
+                handleFileSelect()
+              }
+            }}
             style={{
               border: isDragging ? '3px dashed var(--primary, #007bff)' : '2px dashed var(--border, #ddd)',
               borderRadius: '12px',
@@ -381,7 +419,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                 <p>Upload en cours...</p>
               </div>
             ) : (
-              <>
+              <div style={{ pointerEvents: 'none' }}>
                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📁</div>
                 <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem', fontWeight: '500' }}>
                   {isDragging ? 'Lâche le fichier ici' : 'Glisse-dépose un fichier ici'}
@@ -389,7 +427,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                 <p style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
                   ou clique pour sélectionner un fichier
                 </p>
-              </>
+              </div>
             )}
           </div>
         </Card>
