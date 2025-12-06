@@ -571,6 +571,113 @@ fn storage_get_file_info(encrypted_data: Vec<u8>) -> Result<FileInfo, String> {
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct SelectedFile {
+    pub path: String,
+    pub name: String,
+    pub data: Vec<u8>,
+    pub size: usize,
+}
+
+/// Sélectionne un fichier depuis le système de fichiers et retourne son contenu.
+#[tauri::command]
+async fn select_and_read_file(app: tauri::AppHandle) -> Result<SelectedFile, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+    
+    log::info!("select_and_read_file called");
+    
+    // Utilise un oneshot channel pour recevoir le résultat de manière asynchrone
+    let (tx, rx) = oneshot::channel();
+    
+    // Ouvre le dialogue de sélection de fichier
+    app.dialog()
+        .file()
+        .set_title("Sélectionner un fichier à chiffrer")
+        .pick_file(move |path_opt| {
+            let _ = tx.send(path_opt);
+        });
+    
+    // Attendre le résultat avec timeout
+    let path_opt = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        .await
+        .map_err(|_| "Timeout lors de la sélection de fichier".to_string())?
+        .map_err(|_| "Erreur lors de la réception du résultat".to_string())?;
+    
+    let file_path = path_opt.ok_or_else(|| "Aucun fichier sélectionné".to_string())?;
+    // FilePath implémente Display, on peut le convertir en String puis en PathBuf
+    let path_buf = PathBuf::from(file_path.to_string());
+    let path_str = path_buf.to_string_lossy().to_string();
+    let file_name = path_buf
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("fichier")
+        .to_string();
+    
+    log::info!("File selected: path={}, name={}", path_str, file_name);
+    
+    // Lit le contenu du fichier de manière asynchrone
+    let data = tokio::fs::read(&path_buf)
+        .await
+        .map_err(|e| format!("Erreur lors de la lecture du fichier: {}", e))?;
+    
+    let size = data.len();
+    log::info!("File read successfully: size={} bytes", size);
+    
+    Ok(SelectedFile {
+        path: path_str,
+        name: file_name,
+        data,
+        size,
+    })
+}
+
+/// Sauvegarde un fichier déchiffré en utilisant un dialogue de sauvegarde.
+#[tauri::command]
+async fn save_decrypted_file(
+    app: tauri::AppHandle,
+    data: Vec<u8>,
+    suggested_name: String,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+    
+    log::info!("save_decrypted_file called: suggested_name={}, data_len={}", suggested_name, data.len());
+    
+    // Utilise un oneshot channel pour recevoir le résultat de manière asynchrone
+    let (tx, rx) = oneshot::channel();
+    
+    // Ouvre le dialogue de sauvegarde de fichier
+    app.dialog()
+        .file()
+        .set_title("Sauvegarder le fichier déchiffré")
+        .set_file_name(&suggested_name)
+        .save_file(move |path_opt| {
+            let _ = tx.send(path_opt);
+        });
+    
+    // Attendre le résultat avec timeout
+    let path_opt = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        .await
+        .map_err(|_| "Timeout lors de la sélection du fichier de sauvegarde".to_string())?
+        .map_err(|_| "Erreur lors de la réception du résultat".to_string())?;
+    
+    let file_path = path_opt.ok_or_else(|| "Aucun fichier sélectionné pour la sauvegarde".to_string())?;
+    let path_buf = PathBuf::from(file_path.to_string());
+    let path_str = path_buf.to_string_lossy().to_string();
+    
+    log::info!("Saving file to: {}", path_str);
+    
+    // Sauvegarde le fichier de manière asynchrone
+    tokio::fs::write(&path_buf, &data)
+        .await
+        .map_err(|e| format!("Erreur lors de l'écriture du fichier: {}", e))?;
+    
+    log::info!("File saved successfully: {}", path_str);
+    
+    Ok(path_str)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StorjConfigRequest {
     #[serde(rename = "accessKeyId")]
@@ -979,6 +1086,8 @@ async fn storj_download_file_by_path(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_log::Builder::default().build())
         .manage(AppState {
             master_key: Mutex::new(None),
             storj_client: AsyncMutex::new(None),
@@ -1003,16 +1112,12 @@ pub fn run() {
             storj_download_file,
             storj_download_file_by_path,
             storj_list_files,
-            storj_delete_file
+            storj_delete_file,
+            select_and_read_file,
+            save_decrypted_file
         ])
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+        .setup(|_app| {
+            // Les plugins sont initialisés via .plugin() dans le Builder
             Ok(())
         })
         .run(tauri::generate_context!())
