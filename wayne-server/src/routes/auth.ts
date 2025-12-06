@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { UserModel } from '../models/User';
 import { generateAccessToken } from '../utils/jwt';
+import { RefreshTokenModel } from '../models/RefreshToken';
 import { StorjService } from '../services/storj';
 import { StorjBucketModel } from '../models/StorjBucket';
 import crypto from 'crypto';
@@ -37,7 +38,7 @@ const router = Router();
 // POST /api/v1/auth/register
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, remember_me } = req.body;
     
     // Validation
     if (!email || !password) {
@@ -89,8 +90,27 @@ router.post('/register', async (req: Request, res: Response) => {
       // L'utilisateur peut toujours utiliser l'application en mode local
     }
     
+    // Génère un access token
+    const accessToken = generateAccessToken({
+      userId: user.id,
+      email: user.email,
+    });
+    
+    // Crée un refresh token uniquement si remember_me est true
+    let refreshToken: string | null = null;
+    if (remember_me === true) {
+      const { token } = await RefreshTokenModel.create({
+        user_id: user.id,
+        expires_in_days: 30,
+      });
+      refreshToken = token;
+    }
+    
     res.status(201).json({
       user_id: user.id,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      expires_in: 7 * 24 * 60 * 60, // 7 jours en secondes
       message: 'Compte créé avec succès',
     });
   } catch (error) {
@@ -105,7 +125,7 @@ router.post('/register', async (req: Request, res: Response) => {
 // POST /api/v1/auth/login
 router.post('/login', async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, remember_me } = req.body;
     
     // Validation
     if (!email || !password) {
@@ -139,8 +159,15 @@ router.post('/login', async (req: Request, res: Response) => {
       email: user.email,
     });
     
-    // TODO: Implémenter refresh token si nécessaire
-    const refreshToken = 'not_implemented_yet';
+    // Crée un refresh token uniquement si remember_me est true
+    let refreshToken: string | null = null;
+    if (remember_me === true) {
+      const { token } = await RefreshTokenModel.create({
+        user_id: user.id,
+        expires_in_days: 30,
+      });
+      refreshToken = token;
+    }
     
     res.json({
       access_token: accessToken,
@@ -153,6 +180,83 @@ router.post('/login', async (req: Request, res: Response) => {
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Erreur lors de la connexion',
+    });
+  }
+});
+
+// POST /api/v1/auth/refresh
+router.post('/refresh', async (req: Request, res: Response) => {
+  try {
+    const { refresh_token } = req.body;
+    
+    // Validation
+    if (!refresh_token) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Refresh token requis',
+      });
+    }
+    
+    // Trouve et vérifie le refresh token
+    const refreshTokenRecord = await RefreshTokenModel.findByToken(refresh_token);
+    if (!refreshTokenRecord) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Refresh token invalide ou expiré',
+      });
+    }
+    
+    // Récupère l'utilisateur
+    const user = await UserModel.findById(refreshTokenRecord.user_id);
+    if (!user) {
+      // Token orphelin, on le supprime
+      await RefreshTokenModel.revoke(refreshTokenRecord.id);
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Utilisateur introuvable',
+      });
+    }
+    
+    // Génère un nouveau access token
+    const accessToken = generateAccessToken({
+      userId: user.id,
+      email: user.email,
+    });
+    
+    res.json({
+      access_token: accessToken,
+      expires_in: 7 * 24 * 60 * 60, // 7 jours en secondes
+    });
+  } catch (error) {
+    console.error('Erreur lors du rafraîchissement du token:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Erreur lors du rafraîchissement du token',
+    });
+  }
+});
+
+// POST /api/v1/auth/logout
+router.post('/logout', async (req: Request, res: Response) => {
+  try {
+    const { refresh_token } = req.body;
+    
+    if (refresh_token) {
+      // Révoque le refresh token spécifique
+      const refreshTokenRecord = await RefreshTokenModel.findByToken(refresh_token);
+      if (refreshTokenRecord) {
+        await RefreshTokenModel.revoke(refreshTokenRecord.id);
+      }
+    }
+    
+    res.json({
+      message: 'Déconnexion réussie',
+    });
+  } catch (error) {
+    console.error('Erreur lors de la déconnexion:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Erreur lors de la déconnexion',
     });
   }
 });

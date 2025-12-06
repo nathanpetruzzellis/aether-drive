@@ -1,0 +1,90 @@
+# ============================================
+# COMMANDES COMPLÈTES POUR TESTER REFRESH TOKENS
+# ============================================
+
+# ============================================
+# ÉTAPE 1 : DÉPLOIEMENT SUR LE SERVEUR
+# ============================================
+
+# Option A : Script automatique (RECOMMANDÉ)
+./test-refresh-tokens.sh
+
+# Option B : Commandes manuelles
+
+# 1. Transfert des fichiers
+scp -i ~/.ssh/id_ed25519_wayne wayne-server/src/models/RefreshToken.ts root@72.62.59.152:/opt/wayne-server/src/models/
+scp -i ~/.ssh/id_ed25519_wayne wayne-server/src/routes/auth.ts root@72.62.59.152:/opt/wayne-server/src/routes/
+
+# 2. Compilation
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "cd /opt/wayne-server && npm install && npm run build"
+
+# 3. Redémarrage
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "systemctl restart wayne && sleep 2 && systemctl status wayne --no-pager -l | head -15"
+
+# 4. Vérification des logs
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "journalctl -u wayne -n 30 --no-pager"
+
+# ============================================
+# ÉTAPE 2 : TEST DANS L'APPLICATION REACT
+# ============================================
+
+# Lancer l'application
+npm run tauri dev
+
+# Dans la console du navigateur (F12) :
+# localStorage.getItem('wayne_refresh_token')
+# → Doit retourner un token après connexion
+
+# ============================================
+# ÉTAPE 3 : TEST DES ENDPOINTS API
+# ============================================
+
+# 3.1 Obtenir un refresh_token (remplace email/password)
+curl -X POST https://eather.io/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "ton_email@example.com", "password": "ton_mot_de_passe"}' | jq '.refresh_token'
+
+# 3.2 Test /refresh (remplace REFRESH_TOKEN)
+REFRESH_TOKEN="ton_refresh_token_ici"
+curl -X POST https://eather.io/api/v1/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\": \"$REFRESH_TOKEN\"}" | jq '.'
+
+# 3.3 Test /logout
+curl -X POST https://eather.io/api/v1/auth/logout \
+  -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\": \"$REFRESH_TOKEN\"}" | jq '.'
+
+# 3.4 Vérification révocation (doit retourner 401)
+curl -X POST https://eather.io/api/v1/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\": \"$REFRESH_TOKEN\"}" | jq '.'
+
+# 3.5 Script automatique
+./test-refresh-manual.sh "TON_REFRESH_TOKEN_ICI"
+
+# ============================================
+# ÉTAPE 4 : VÉRIFICATIONS SERVEUR
+# ============================================
+
+# Vérifier les refresh tokens en base
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "sudo -u postgres psql -d wayne_db -c \"SELECT id, user_id, expires_at, created_at, expires_at > NOW() as is_valid FROM refresh_tokens ORDER BY created_at DESC LIMIT 5;\""
+
+# Logs en temps réel
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "journalctl -u wayne -f"
+
+# Logs récents avec filtres
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "journalctl -u wayne -n 50 --no-pager | grep -i 'refresh\|token\|login\|logout'"
+
+# ============================================
+# COMMANDES UTILES
+# ============================================
+
+# Statut du service
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "systemctl status wayne"
+
+# Redémarrer le service
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "systemctl restart wayne"
+
+# Nettoyer les tokens expirés
+ssh -i ~/.ssh/id_ed25519_wayne root@72.62.59.152 "sudo -u postgres psql -d wayne_db -c \"DELETE FROM refresh_tokens WHERE expires_at <= NOW();\""

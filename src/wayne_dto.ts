@@ -47,11 +47,15 @@ export interface GetKeyEnvelopeResponse {
 export interface RegisterRequest {
   email: string
   password: string
+  remember_me?: boolean // Si true, crée un refresh token pour rester connecté
 }
 
 // Réponse d'inscription.
 export interface RegisterResponse {
   user_id: string
+  access_token: string
+  refresh_token: string | null // null si remember_me=false
+  expires_in: number
   message: string
 }
 
@@ -59,12 +63,13 @@ export interface RegisterResponse {
 export interface LoginRequest {
   email: string
   password: string
+  remember_me?: boolean // Si true, crée un refresh token pour rester connecté
 }
 
 // Réponse de connexion (contient le token d'authentification).
 export interface LoginResponse {
   access_token: string
-  refresh_token: string
+  refresh_token: string | null // null si remember_me=false
   user_id: string
   expires_in: number
 }
@@ -90,6 +95,27 @@ export interface CreateStorjBucketResponse {
   bucket_id: string
   bucket_name: string
   endpoint: string
+  message: string
+}
+
+// Requête de rafraîchissement de token.
+export interface RefreshTokenRequest {
+  refresh_token: string
+}
+
+// Réponse de rafraîchissement de token.
+export interface RefreshTokenResponse {
+  access_token: string
+  expires_in: number
+}
+
+// Requête de déconnexion.
+export interface LogoutRequest {
+  refresh_token: string
+}
+
+// Réponse de déconnexion.
+export interface LogoutResponse {
   message: string
 }
 

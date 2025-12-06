@@ -150,6 +150,19 @@ fn get_index_db_path(app: tauri::AppHandle) -> Result<String, String> {
     Ok(db_path.to_string_lossy().to_string())
 }
 
+/// Supprime la base de données locale (utile en cas de conflit avec Wayne).
+#[tauri::command]
+fn reset_local_database(app: tauri::AppHandle) -> Result<(), String> {
+    let db_path = get_db_path(&app)?;
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).map_err(|e| {
+            format!("Failed to remove database file: {}", e)
+        })?;
+        log::info!("Local database file removed successfully");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct IndexStatus {
     pub db_path: String,
@@ -202,8 +215,31 @@ fn crypto_unlock(
     // Ouvre l'index SQLCipher existant avec la MasterKey restaurée.
     let db_path = get_db_path(&app)?;
     let master_key_bytes = hierarchy.master_key().as_bytes();
-    SqlCipherIndex::open(&db_path, master_key_bytes)
-        .map_err(|e| format!("Failed to open SQLCipher index: {}", e))?;
+    
+    // Vérifie si la base existe avant d'essayer de l'ouvrir
+    let db_exists = db_path.exists();
+    
+    match SqlCipherIndex::open(&db_path, master_key_bytes) {
+        Ok(_) => {
+            // Base ouverte avec succès
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to open SQLCipher index: {}", e);
+            
+            // Si la base existe mais qu'on ne peut pas l'ouvrir, c'est probablement une clé incorrecte
+            if db_exists {
+                return Err(format!(
+                    "{}. La clé de déchiffrement ne correspond pas à la base de données existante. \
+                    Cela peut arriver si tu as créé un nouveau coffre localement mais que tu essaies \
+                    de déverrouiller avec un MKEK d'un ancien coffre depuis Wayne. \
+                    Solution : Supprime la base locale (elle sera recréée) ou utilise le bon MKEK.",
+                    error_msg
+                ));
+            }
+            
+            return Err(error_msg);
+        }
+    }
 
     // Stocke la MasterKey dans l'état global pour les opérations d'index ultérieures.
     // NOTE: La MasterKey reste uniquement en mémoire (RAM volatile), conformément à la blueprint.
@@ -877,6 +913,7 @@ pub fn run() {
             crypto_bootstrap,
             crypto_unlock,
             get_index_db_path,
+            reset_local_database,
             get_index_status,
             index_add_file,
             index_list_files,

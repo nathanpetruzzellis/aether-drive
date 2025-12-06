@@ -23,6 +23,7 @@ interface UnlockPageProps {
   onUnlock: () => void
   onGoToLogin?: () => void
   onDisableWayne?: () => void
+  hasWayneEnvelopeId?: boolean
 }
 
 const STORAGE_KEY = 'aether_drive_bootstrap_data'
@@ -30,7 +31,7 @@ const STORAGE_KEY = 'aether_drive_bootstrap_data'
 export function UnlockPage({ wayneClient, useWayne, onBootstrap, onUnlock, onGoToLogin, onDisableWayne, hasWayneEnvelopeId }: UnlockPageProps) {
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [status, setStatus] = useState<{ type: 'success' | 'error' | 'warning' | 'info'; message: string } | null>(null)
+  const [status, setStatus] = useState<{ type: 'success' | 'error' | 'warning' | 'info'; message: string; isKeyMismatch?: boolean } | null>(null)
   const [isBootstrapMode, setIsBootstrapMode] = useState(false)
 
   const handleBootstrap = async () => {
@@ -139,9 +140,25 @@ export function UnlockPage({ wayneClient, useWayne, onBootstrap, onUnlock, onGoT
           })
         } catch (envelopeError) {
           const envelopeErrorMsg = envelopeError instanceof Error ? envelopeError.message : String(envelopeError)
+          
+          // Détecte le cas spécifique d'une clé qui ne correspond pas
+          let errorType: 'error' | 'warning' = 'error'
+          let errorMessage = envelopeErrorMsg
+          
+          // Détecte le cas spécifique d'une clé qui ne correspond pas
+          const isKeyMismatch = envelopeErrorMsg.includes('clé de déchiffrement ne correspond pas') || 
+                                envelopeErrorMsg.includes('file is not a database') ||
+                                envelopeErrorMsg.includes('base de données locale ne correspond pas')
+          
+          if (isKeyMismatch) {
+            errorType = 'warning'
+            errorMessage = '⚠️ Conflit détecté : La base de données locale ne correspond pas au MKEK de Wayne. Cela arrive si tu as créé un nouveau coffre localement. Tu peux supprimer la base locale et réinitialiser avec Wayne.'
+          }
+          
           setStatus({
-            type: 'error',
-            message: `Erreur lors de la récupération du MKEK depuis Wayne: ${envelopeErrorMsg}`,
+            type: errorType,
+            message: `Erreur lors de la récupération du MKEK depuis Wayne: ${errorMessage}`,
+            isKeyMismatch: isKeyMismatch, // Flag pour afficher le bouton
           })
           setIsLoading(false)
           return
@@ -289,7 +306,33 @@ export function UnlockPage({ wayneClient, useWayne, onBootstrap, onUnlock, onGoT
               type={status.type}
               message={status.message}
               onDismiss={() => setStatus(null)}
-            />
+            >
+              {status.type === 'warning' && status.isKeyMismatch && (
+                <Button
+                  variant="secondary"
+                  onClick={async () => {
+                    try {
+                      await invoke('reset_local_database')
+                      setStatus({
+                        type: 'info',
+                        message: '✅ Base de données locale supprimée. Tu peux maintenant réinitialiser le coffre avec Wayne.',
+                      })
+                      setIsBootstrapMode(true)
+                    } catch (e) {
+                      const errorMsg = e instanceof Error ? e.message : String(e)
+                      setStatus({
+                        type: 'error',
+                        message: `Erreur lors de la suppression de la base: ${errorMsg}`,
+                      })
+                    }
+                  }}
+                  disabled={isLoading}
+                  style={{ marginTop: '0.5rem' }}
+                >
+                  Supprimer la base locale et réinitialiser
+                </Button>
+              )}
+            </StatusMessage>
           )}
 
           <div className="unlock-actions">

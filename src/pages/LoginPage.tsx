@@ -20,6 +20,7 @@ export function LoginPage({
 }: LoginPageProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(true) // Par défaut coché pour meilleure UX
   const [isRegistering, setIsRegistering] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'warning' | 'info'; message: string } | null>(null)
@@ -39,6 +40,7 @@ export function LoginPage({
       const response = await client.register({
         email,
         password,
+        remember_me: rememberMe,
       })
 
       setStatus({
@@ -69,6 +71,7 @@ export function LoginPage({
       const response = await client.login({
         email,
         password,
+        remember_me: rememberMe,
       })
 
       client.setAccessToken(response.access_token)
@@ -137,6 +140,21 @@ export function LoginPage({
             disabled={isLoading}
             required
           />
+
+          <div className="remember-me-container">
+            <label className="remember-me-checkbox">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                disabled={isLoading}
+              />
+              <span>Rester connecté</span>
+            </label>
+            <p className="remember-me-help">
+              Si coché, tu resteras connecté pendant 30 jours. Sinon, tu devras te reconnecter à chaque redémarrage de l'application.
+            </p>
+          </div>
 
           {status && (
             <StatusMessage

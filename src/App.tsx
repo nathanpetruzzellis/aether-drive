@@ -39,24 +39,40 @@ function App() {
   const [useWayne, setUseWayne] = useState(false)
   const [isUnlocked, setIsUnlocked] = useState(false)
 
-  // Détermine la page initiale au chargement
+  // Détermine la page initiale au chargement et restaure la session Wayne
   useEffect(() => {
     const initialBootstrapData = loadBootstrapData()
     const storedWayneEnvelopeId = localStorage.getItem('wayne_envelope_id')
+    
+    // Tente de restaurer la session Wayne automatiquement
+    const restoreWayneSession = async () => {
+      const client = new WayneClient({ baseUrl: wayneBaseUrl })
+      const sessionRestored = await client.restoreSession()
+      
+      if (sessionRestored && client.getAccessToken()) {
+        // Session restaurée avec succès
+        setWayneClient(client)
+        setUseWayne(true)
+        
+        // Si on a un envelope ID, on le récupère
+        if (storedWayneEnvelopeId) {
+          setWayneEnvelopeId(storedWayneEnvelopeId)
+        }
+      }
+    }
+    
+    restoreWayneSession()
     
     // Si on a des données de bootstrap, on peut aller directement à unlock
     if (initialBootstrapData) {
       setCurrentPage('unlock')
     }
     
-    // Si on a un envelope ID Wayne, on le stocke mais on n'active pas useWayne
-    // tant qu'on n'a pas de client Wayne actif
+    // Si on a un envelope ID Wayne, on le stocke
     if (storedWayneEnvelopeId) {
       setWayneEnvelopeId(storedWayneEnvelopeId)
-      // Ne pas activer useWayne automatiquement sans client actif
-      // L'utilisateur devra se connecter à Wayne pour activer le mode Wayne
     }
-  }, [])
+  }, [wayneBaseUrl])
 
   const handleWayneLoginSuccess = (client: WayneClient, envelopeId: string | null) => {
     setWayneClient(client)
@@ -75,7 +91,17 @@ function App() {
     setCurrentPage('dashboard')
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Déconnexion côté Wayne si un client est actif
+    if (wayneClient) {
+      try {
+        await wayneClient.logout()
+      } catch (error) {
+        console.error('Erreur lors de la déconnexion Wayne:', error)
+        // Continue même si la déconnexion échoue
+      }
+    }
+    
     setIsUnlocked(false)
     setWayneClient(null)
     setWayneEnvelopeId(null)

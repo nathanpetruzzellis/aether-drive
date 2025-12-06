@@ -10,6 +10,10 @@ import type {
   WayneErrorResponse,
   StorjConfigDto,
   CreateStorjBucketResponse,
+  RefreshTokenRequest,
+  RefreshTokenResponse,
+  LogoutRequest,
+  LogoutResponse,
 } from './wayne_dto'
 
 // Client HTTP pour communiquer avec le Control Plane "Wayne".
@@ -25,10 +29,14 @@ export interface WayneClientConfig {
 export class WayneClient {
   private readonly baseUrl: string
   private accessToken: string | null = null
+  private refreshToken: string | null = null
+  private readonly storageKey = 'wayne_refresh_token'
 
   constructor(config: WayneClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '') // Enlève le slash final
     this.accessToken = config.accessToken || null
+    // Charge le refresh token depuis localStorage si disponible
+    this.refreshToken = this.loadRefreshToken()
   }
 
   // Définit le token d'authentification après une connexion réussie.
@@ -44,6 +52,32 @@ export class WayneClient {
   // Enlève le token d'authentification (déconnexion).
   clearAccessToken() {
     this.accessToken = null
+  }
+
+  // Définit le refresh token et le sauvegarde dans localStorage.
+  setRefreshToken(token: string) {
+    this.refreshToken = token
+    localStorage.setItem(this.storageKey, token)
+  }
+
+  // Récupère le refresh token actuel.
+  getRefreshToken(): string | null {
+    return this.refreshToken
+  }
+
+  // Enlève le refresh token (déconnexion).
+  clearRefreshToken() {
+    this.refreshToken = null
+    localStorage.removeItem(this.storageKey)
+  }
+
+  // Charge le refresh token depuis localStorage.
+  private loadRefreshToken(): string | null {
+    try {
+      return localStorage.getItem(this.storageKey)
+    } catch {
+      return null
+    }
   }
 
   // Construit les headers HTTP avec authentification si disponible.
@@ -101,7 +135,17 @@ export class WayneClient {
         await this.handleError(response)
       }
 
-      return (await response.json()) as RegisterResponse
+      const registerResponse = (await response.json()) as RegisterResponse
+      // Stocke automatiquement les tokens après une inscription réussie
+      this.setAccessToken(registerResponse.access_token)
+      // Ne stocke le refresh token que s'il est présent (remember_me=true)
+      if (registerResponse.refresh_token) {
+        this.setRefreshToken(registerResponse.refresh_token)
+      } else {
+        // Si pas de refresh token, on nettoie l'ancien s'il existe
+        this.clearRefreshToken()
+      }
+      return registerResponse
     } catch (error) {
       this.handleNetworkError(error, 'register')
     }
@@ -121,8 +165,15 @@ export class WayneClient {
       }
 
       const loginResponse = (await response.json()) as LoginResponse
-      // Stocke automatiquement le token après une connexion réussie
+      // Stocke automatiquement les tokens après une connexion réussie
       this.setAccessToken(loginResponse.access_token)
+      // Ne stocke le refresh token que s'il est présent (remember_me=true)
+      if (loginResponse.refresh_token) {
+        this.setRefreshToken(loginResponse.refresh_token)
+      } else {
+        // Si pas de refresh token, on nettoie l'ancien s'il existe
+        this.clearRefreshToken()
+      }
       return loginResponse
     } catch (error) {
       this.handleNetworkError(error, 'login')
@@ -239,6 +290,85 @@ export class WayneClient {
       return (await response.json()) as CreateStorjBucketResponse
     } catch (error) {
       this.handleNetworkError(error, 'createStorjBucket')
+    }
+  }
+
+  // Rafraîchit l'access token en utilisant le refresh token.
+  async refreshAccessToken(): Promise<string> {
+    if (!this.refreshToken) {
+      throw new Error('Aucun refresh token disponible. Veuillez vous reconnecter.')
+    }
+
+    try {
+      const request: RefreshTokenRequest = {
+        refresh_token: this.refreshToken,
+      }
+
+      const response = await fetch(`${this.baseUrl}/api/v1/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      })
+
+      if (!response.ok) {
+        // Si le refresh token est invalide, on nettoie tout
+        if (response.status === 401) {
+          this.clearAccessToken()
+          this.clearRefreshToken()
+        }
+        await this.handleError(response)
+      }
+
+      const refreshResponse = (await response.json()) as RefreshTokenResponse
+      this.setAccessToken(refreshResponse.access_token)
+      return refreshResponse.access_token
+    } catch (error) {
+      this.handleNetworkError(error, 'refreshAccessToken')
+    }
+  }
+
+  // Déconnexion (révoque le refresh token).
+  async logout(): Promise<void> {
+    if (this.refreshToken) {
+      try {
+        const request: LogoutRequest = {
+          refresh_token: this.refreshToken,
+        }
+
+        await fetch(`${this.baseUrl}/api/v1/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(request),
+        })
+      } catch (error) {
+        // On continue même si la requête échoue (déconnexion locale)
+        console.warn('Erreur lors de la déconnexion côté serveur:', error)
+      }
+    }
+
+    // Nettoie toujours les tokens locaux
+    this.clearAccessToken()
+    this.clearRefreshToken()
+  }
+
+  // Tente de restaurer la session en utilisant le refresh token.
+  async restoreSession(): Promise<boolean> {
+    if (!this.refreshToken) {
+      return false
+    }
+
+    try {
+      await this.refreshAccessToken()
+      return true
+    } catch (error) {
+      // Refresh token invalide ou expiré
+      this.clearAccessToken()
+      this.clearRefreshToken()
+      return false
     }
   }
 }
