@@ -431,10 +431,10 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
               <div style={{ pointerEvents: 'none' }}>
                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📁</div>
                 <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem', fontWeight: '500' }}>
-                  {isDragging ? 'Lâche le fichier ici' : 'Glisse-dépose un fichier ici'}
+                  Clique pour sélectionner un fichier
                 </p>
                 <p style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9rem' }}>
-                  ou clique pour sélectionner un fichier
+                  Le drag & drop sera disponible dans une prochaine version
                 </p>
               </div>
             )}
