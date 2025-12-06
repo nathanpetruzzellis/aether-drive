@@ -1150,8 +1150,8 @@ pub fn run() {
         ])
         .setup(|_app| {
             // Les plugins sont initialisés via .plugin() dans le Builder
-            // Les événements de file drop natifs de Tauri sont automatiquement émis
-            // Le frontend les écoute directement via l'API Tauri
+            // Note: Le drag & drop HTML5 devrait fonctionner si le drag & drop natif de Tauri est désactivé
+            // Dans Tauri 2.0, cela se fait via la configuration de la fenêtre dans tauri.conf.json
             Ok(())
         })
         .run(tauri::generate_context!())
