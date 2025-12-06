@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { Card } from '../components/Card'
 import { Button } from '../components/Button'
 import { StatusMessage } from '../components/StatusMessage'
@@ -83,6 +84,85 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       loadFiles()
     }
   }, [storjConfigured])
+
+  // Écoute les événements de file drop natifs de Tauri
+  useEffect(() => {
+    let unlistenDrop: (() => void) | undefined
+    let unlistenHover: (() => void) | undefined
+    let unlistenCancelled: (() => void) | undefined
+
+    async function setupFileDropListeners() {
+      try {
+        // Écoute l'événement de drop natif de Tauri
+        // Dans Tauri 2.0, les événements sont émis avec le format: { paths: string[] }
+        unlistenDrop = await listen('tauri://file-drop', async (event: any) => {
+          console.log('Tauri file-drop event:', event.payload)
+          // Le payload peut être un tableau de chemins ou un objet avec paths
+          let filePaths: string[] = []
+          if (Array.isArray(event.payload)) {
+            filePaths = event.payload
+          } else if (event.payload?.paths) {
+            filePaths = event.payload.paths
+          } else if (typeof event.payload === 'string') {
+            filePaths = [event.payload]
+          }
+          
+          if (filePaths.length > 0) {
+            try {
+              // Pour l'instant, on utilise le premier fichier
+              const filePath = filePaths[0]
+              
+              // Lit le fichier depuis le système de fichiers
+              const fileData = await invoke<{ path: string; name: string; data: number[]; size: number }>('select_and_read_file_from_path', {
+                filePath: filePath,
+              })
+              
+              // Utilise directement les données pour l'upload
+              const logicalPath = `/${fileData.name}`
+              
+              // Chiffre le fichier
+              const encrypted = await invoke<number[]>('storage_encrypt_file', {
+                data: fileData.data,
+                logicalPath: logicalPath,
+              })
+              
+              // Upload vers Storj
+              await invoke<string>('storj_upload_file', {
+                encryptedData: encrypted,
+                logicalPath: logicalPath,
+              })
+              
+              setStatus({ type: 'success', message: `✅ Fichier "${fileData.name}" uploadé avec succès` })
+              await loadFiles()
+            } catch (e) {
+              const errorMsg = e instanceof Error ? e.message : String(e)
+              setStatus({ type: 'error', message: `Erreur lors de la lecture du fichier: ${errorMsg}` })
+            }
+          }
+        })
+
+        // Écoute l'événement de hover pour le feedback visuel
+        unlistenHover = await listen('tauri://file-drop-hover', () => {
+          setIsDragging(true)
+        })
+
+        // Écoute l'événement de cancellation
+        unlistenCancelled = await listen('tauri://file-drop-cancelled', () => {
+          setIsDragging(false)
+        })
+      } catch (e) {
+        console.error('Failed to setup file drop listeners:', e)
+      }
+    }
+
+    setupFileDropListeners()
+
+    return () => {
+      unlistenDrop?.()
+      unlistenHover?.()
+      unlistenCancelled?.()
+    }
+  }, [])
 
   // Chargement des fichiers depuis Storj
   async function loadFiles() {
