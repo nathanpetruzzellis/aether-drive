@@ -119,4 +119,21 @@ export interface LogoutResponse {
   message: string
 }
 
+// Requête de changement de mot de passe.
+export interface ChangePasswordRequest {
+  password_type: 'wayne' | 'master' // Type de mot de passe à changer
+  old_password?: string // Requis uniquement pour 'wayne'
+  new_password?: string // Requis uniquement pour 'wayne'
+  new_password_salt?: number[] // Requis uniquement pour 'master'
+  new_mkek?: { // Requis uniquement pour 'master'
+    nonce: number[]
+    payload: number[]
+  }
+}
+
+// Réponse de changement de mot de passe.
+export interface ChangePasswordResponse {
+  message: string
+}
+
 

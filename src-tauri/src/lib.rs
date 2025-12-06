@@ -27,6 +27,20 @@ pub struct MkekUnlockRequest {
     pub mkek: MkekCiphertext,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub old_password: String,
+    pub new_password: String,
+    pub old_password_salt: [u8; 16],
+    pub old_mkek: MkekCiphertext,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangePasswordResponse {
+    pub new_password_salt: [u8; 16],
+    pub new_mkek: MkekCiphertext,
+}
+
 /// État global stockant la MasterKey après déverrouillage (en mémoire uniquement).
 struct AppState {
     master_key: Mutex<Option<MasterKey>>,
@@ -253,6 +267,66 @@ fn crypto_unlock(
     *master_key_guard = Some(crate::crypto::MasterKey::from_vec(master_key_bytes_vec));
 
     Ok(())
+}
+
+/// Change le mot de passe sans re-chiffrer les données.
+/// 
+/// Le processus :
+/// 1. Déchiffre le MKEK avec l'ancien mot de passe pour obtenir la MasterKey
+/// 2. Génère un nouveau salt
+/// 3. Dérive une nouvelle KEK avec le nouveau mot de passe
+/// 4. Re-chiffre la MasterKey avec la nouvelle KEK (nouveau MKEK)
+/// 
+/// La MasterKey reste la même, seule la façon de la chiffrer change.
+#[tauri::command]
+fn crypto_change_password(
+    req: ChangePasswordRequest,
+) -> Result<ChangePasswordResponse, String> {
+    use crate::crypto::mkek;
+    
+    log::info!("Starting password change");
+    
+    // Étape 1 : Déchiffre le MKEK avec l'ancien mot de passe pour obtenir la MasterKey
+    let old_password_secret = PasswordSecret::new(req.old_password);
+    let old_hierarchy = KeyHierarchy::restore(
+        &old_password_secret,
+        req.old_password_salt,
+        &req.old_mkek,
+    )
+    .map_err(|e| {
+        log::error!("Failed to restore hierarchy with old password: {}", e);
+        format!("Ancien mot de passe incorrect: {}", e)
+    })?;
+    
+    // Récupère la MasterKey (elle reste la même)
+    let master_key = old_hierarchy.master_key();
+    
+    // Étape 2 : Génère un nouveau salt pour le nouveau mot de passe
+    let core = CryptoCore::default();
+    let new_password_salt = core.random_password_salt();
+    log::info!("New password salt generated");
+    
+    // Étape 3 : Dérive une nouvelle KEK avec le nouveau mot de passe
+    let new_password_secret = PasswordSecret::new(req.new_password);
+    let new_kek = core.derive_kek(&new_password_secret, &new_password_salt)
+        .map_err(|e| {
+            log::error!("Failed to derive new KEK: {}", e);
+            format!("Erreur lors de la dérivation de la nouvelle clé: {}", e)
+        })?;
+    
+    // Étape 4 : Re-chiffre la MasterKey avec la nouvelle KEK (nouveau MKEK)
+    let new_mkek = mkek::encrypt_master_key(&new_kek, master_key)
+        .map_err(|e| {
+            log::error!("Failed to encrypt master key with new KEK: {}", e);
+            format!("Erreur lors du chiffrement avec la nouvelle clé: {}", e)
+        })?;
+    
+    log::info!("Password change successful");
+    
+    Ok(ChangePasswordResponse {
+        new_password_salt,
+        new_mkek,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -912,6 +986,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             crypto_bootstrap,
             crypto_unlock,
+            crypto_change_password,
             get_index_db_path,
             reset_local_database,
             get_index_status,

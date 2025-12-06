@@ -58,5 +58,18 @@ export class UserModel {
   static async verifyPassword(user: User, password: string): Promise<boolean> {
     return bcrypt.compare(password, user.password_hash);
   }
+
+  // Mettre à jour le mot de passe d'un utilisateur
+  static async updatePassword(userId: string, newPassword: string): Promise<void> {
+    const saltRounds = 12;
+    const password_hash = await bcrypt.hash(newPassword, saltRounds);
+    
+    await pool.query(
+      `UPDATE users 
+       SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [password_hash, userId]
+    );
+  }
 }
 

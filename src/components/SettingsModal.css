@@ -1,0 +1,177 @@
+.settings-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.settings-modal {
+  background: var(--bg-primary, #ffffff);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settings-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.settings-modal-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary, #333);
+}
+
+.settings-modal-close {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.settings-modal-close:hover:not(:disabled) {
+  background: var(--bg-secondary, #f5f5f5);
+  color: var(--text-primary, #333);
+}
+
+.settings-modal-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-modal-content {
+  padding: 1.5rem;
+}
+
+.settings-description {
+  margin: 0 0 1.5rem 0;
+  color: var(--text-secondary, #666);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.settings-modal-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 1.5rem;
+}
+
+.password-type-selector {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  padding-bottom: 1rem;
+}
+
+.password-type-btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: 2px solid var(--border-color, #e0e0e0);
+  background: var(--bg-secondary, #f5f5f5);
+  color: var(--text-primary, #333);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.password-type-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary, #e8e8e8);
+  border-color: var(--primary-color, #667eea);
+}
+
+.password-type-btn.active {
+  background: var(--primary-color, #667eea);
+  color: white;
+  border-color: var(--primary-color, #667eea);
+}
+
+.password-type-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (prefers-color-scheme: dark) {
+  .password-type-selector {
+    border-bottom-color: var(--border-color, #333);
+  }
+
+  .password-type-btn {
+    background: var(--bg-secondary, #2a2a2a);
+    color: var(--text-primary, #e0e0e0);
+    border-color: var(--border-color, #333);
+  }
+
+  .password-type-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary, #333);
+    border-color: var(--primary-color, #667eea);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-modal {
+    background: var(--bg-primary, #1e1e1e);
+  }
+
+  .settings-modal-header {
+    border-bottom-color: var(--border-color, #333);
+  }
+
+  .settings-modal-header h2 {
+    color: var(--text-primary, #e0e0e0);
+  }
+
+  .settings-modal-close {
+    color: var(--text-secondary, #b0b0b0);
+  }
+
+  .settings-modal-close:hover:not(:disabled) {
+    background: var(--bg-secondary, #2a2a2a);
+    color: var(--text-primary, #e0e0e0);
+  }
+
+  .settings-description {
+    color: var(--text-secondary, #b0b0b0);
+  }
+}
+

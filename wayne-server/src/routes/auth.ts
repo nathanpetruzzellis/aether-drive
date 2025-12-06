@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { authenticateToken } from '../middleware/auth';
 import { UserModel } from '../models/User';
 import { generateAccessToken } from '../utils/jwt';
 import { RefreshTokenModel } from '../models/RefreshToken';
+import { KeyEnvelopeModel } from '../models/KeyEnvelope';
 import { StorjService } from '../services/storj';
 import { StorjBucketModel } from '../models/StorjBucket';
 import crypto from 'crypto';
@@ -257,6 +259,113 @@ router.post('/logout', async (req: Request, res: Response) => {
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Erreur lors de la déconnexion',
+    });
+  }
+});
+
+// POST /api/v1/auth/change-password
+// Nécessite une authentification
+// Supporte deux modes :
+// - change_wayne_password: Change uniquement le mot de passe Wayne (ne touche pas au MKEK)
+// - change_master_password: Change le mot de passe maître (met à jour le MKEK)
+router.post('/change-password', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { old_password, new_password, new_password_salt, new_mkek, password_type } = req.body;
+    
+    if (!req.user) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Authentification requise',
+      });
+    }
+    
+    // Récupère l'utilisateur
+    const user = await UserModel.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({
+        error: 'Not Found',
+        message: 'Utilisateur introuvable',
+      });
+    }
+    
+    // Mode 1 : Changement du mot de passe Wayne uniquement (ne touche pas au MKEK)
+    if (password_type === 'wayne' || (!password_type && !new_password_salt && !new_mkek)) {
+      // Validation pour le mode Wayne
+      if (!old_password || !new_password) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'Ancien et nouveau mot de passe requis',
+        });
+      }
+      
+      if (new_password.length < 8) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'Le nouveau mot de passe doit contenir au moins 8 caractères',
+        });
+      }
+      
+      // Vérifie l'ancien mot de passe Wayne
+      const isValid = await UserModel.verifyPassword(user, old_password);
+      if (!isValid) {
+        return res.status(401).json({
+          error: 'Unauthorized',
+          message: 'Ancien mot de passe incorrect',
+        });
+      }
+      // Met à jour uniquement le mot de passe Wayne
+      await UserModel.updatePassword(user.id, new_password);
+      
+      // Révoque tous les refresh tokens pour forcer une nouvelle connexion
+      await RefreshTokenModel.revokeAllForUser(user.id);
+      
+      res.json({
+        message: 'Mot de passe Wayne changé avec succès. Tu devras te reconnecter.',
+      });
+      return;
+    }
+    
+    // Mode 2 : Changement du mot de passe maître (met à jour le MKEK)
+    // Note: La vérification de l'ancien mot de passe maître se fait côté client
+    // en déchiffrant le MKEK. L'API fait confiance au client pour cette vérification.
+    if (password_type === 'master') {
+      // Validation du nouveau MKEK
+      if (!new_password_salt || !new_mkek || !new_mkek.nonce || !new_mkek.payload) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'Nouveau MKEK requis pour changer le mot de passe maître (password_salt, mkek.nonce, mkek.payload)',
+        });
+      }
+      
+      // Vérifie que l'utilisateur est authentifié (via le token)
+      // La vérification de l'ancien mot de passe maître se fait côté client
+      // en déchiffrant le MKEK avec l'ancien mot de passe maître
+      
+      // Met à jour uniquement l'enveloppe MKEK (ne change PAS le mot de passe Wayne)
+      await KeyEnvelopeModel.upsert({
+        user_id: user.id,
+        version: 1,
+        password_salt: new_password_salt,
+        mkek_nonce: new_mkek.nonce,
+        mkek_payload: new_mkek.payload,
+      });
+      
+      res.json({
+        message: 'Mot de passe maître changé avec succès. Le MKEK a été mis à jour.',
+      });
+      return;
+    }
+    
+    // Cas par défaut : erreur
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Type de changement de mot de passe non spécifié (password_type: "wayne" ou "master")',
+    });
+  } catch (error) {
+    console.error('Erreur lors du changement de mot de passe:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Erreur lors du changement de mot de passe',
     });
   }
 });

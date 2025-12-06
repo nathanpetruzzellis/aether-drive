@@ -14,6 +14,8 @@ import type {
   RefreshTokenResponse,
   LogoutRequest,
   LogoutResponse,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
 } from './wayne_dto'
 
 // Client HTTP pour communiquer avec le Control Plane "Wayne".
@@ -369,6 +371,39 @@ export class WayneClient {
       this.clearAccessToken()
       this.clearRefreshToken()
       return false
+    }
+  }
+
+  // Change le mot de passe Wayne et met à jour le MKEK.
+  async changePassword(request: ChangePasswordRequest): Promise<ChangePasswordResponse> {
+    if (!this.accessToken) {
+      throw new Error('Authentication required. Please login first.')
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/auth/change-password`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(request),
+      })
+
+      if (!response.ok) {
+        await this.handleError(response)
+      }
+
+      const changePasswordResponse = (await response.json()) as ChangePasswordResponse
+      
+      // Nettoie les tokens locaux uniquement si c'est un changement de mot de passe Wayne
+      // (les refresh tokens sont révoqués côté serveur)
+      if (request.password_type === 'wayne') {
+        this.clearAccessToken()
+        this.clearRefreshToken()
+      }
+      // Pour 'master', on ne déconnecte pas car le mot de passe Wayne n'a pas changé
+      
+      return changePasswordResponse
+    } catch (error) {
+      this.handleNetworkError(error, 'changePassword')
     }
   }
 }

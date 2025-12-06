@@ -4,6 +4,7 @@ import { Card } from '../components/Card'
 import { Button } from '../components/Button'
 import { Input } from '../components/Input'
 import { StatusMessage } from '../components/StatusMessage'
+import { SettingsModal } from '../components/SettingsModal'
 import { WayneClient } from '../wayne_client'
 import './DashboardPage.css'
 
@@ -100,6 +101,9 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
 
   // État global pour les messages
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'warning' | 'info'; message: string } | null>(null)
+  
+  // État pour le modal Settings
+  const [showSettings, setShowSettings] = useState(false)
 
   // Charge la liste des fichiers au montage
   useEffect(() => {
@@ -375,10 +379,24 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   return (
     <div className="dashboard-page">
       <div className="dashboard-header">
-        <h1>Aether Drive</h1>
-        <Button variant="secondary" onClick={onLogout}>
-          Verrouiller le coffre
-        </Button>
+        <div className="dashboard-header-left">
+          <h1>Aether Drive</h1>
+          <p className="dashboard-subtitle">Dashboard</p>
+        </div>
+        <div className="dashboard-header-right">
+          {wayneClient && wayneClient.getAccessToken() && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowSettings(true)}
+              style={{ marginRight: '0.75rem' }}
+            >
+              ⚙️ Settings
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onLogout}>
+            Verrouiller le coffre
+          </Button>
+        </div>
       </div>
 
       {status && (
@@ -760,6 +778,17 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           )}
         </Card>
       </div>
+
+      {showSettings && wayneClient && (
+        <SettingsModal
+          wayneClient={wayneClient}
+          onClose={() => setShowSettings(false)}
+          onPasswordChanged={() => {
+            setShowSettings(false)
+            onLogout()
+          }}
+        />
+      )}
     </div>
   )
 }
