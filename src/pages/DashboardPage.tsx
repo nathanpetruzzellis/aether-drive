@@ -98,48 +98,83 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   // Pour l'instant, on utilise uniquement le sélecteur de fichier
   // TODO: Implémenter le drag & drop via l'API Tauri native quand elle sera disponible
 
-  // Chargement des fichiers depuis Storj
+  // Chargement des fichiers depuis Storj avec retry
   async function loadFiles() {
     setIsLoading(true)
     setStatus(null)
+    
     try {
-      const storjFiles = await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
+      let attempts = 0
+      const maxAttempts = 3
       
-      // Enrichir avec les métadonnées de l'index local
-      const enrichedFiles: FileInfo[] = await Promise.all(
-        storjFiles.map(async (file) => {
-          try {
-            // Récupère les métadonnées depuis l'index local si disponibles
-            const localFile = await invoke<{ id: string; logical_path: string; encrypted_size: number } | null>('index_get_file', {
-              fileId: file.uuid,
-            })
-            
-            return {
-              uuid: file.uuid,
-              logical_path: localFile?.logical_path || file.logical_path,
-              encrypted_size: localFile?.encrypted_size || file.encrypted_size || 0,
-              file_id: localFile?.id,
-            } as FileInfo
-          } catch {
-            return {
-              uuid: file.uuid,
-              logical_path: file.logical_path,
-              encrypted_size: file.encrypted_size || 0,
-            } as FileInfo
+      while (attempts < maxAttempts) {
+        try {
+          attempts++
+          
+          if (attempts > 1) {
+            setStatus({ type: 'info', message: `Tentative ${attempts}/${maxAttempts} de chargement des fichiers...` })
+            // Attendre avant de réessayer (backoff exponentiel)
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
           }
-        })
-      )
-      
-      setFiles(enrichedFiles)
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e)
-      setStatus({ type: 'error', message: `Erreur lors du chargement des fichiers: ${errorMsg}` })
+          
+          const storjFiles = await invoke<Array<{ uuid: string; logical_path: string | null; encrypted_size: number | null }>>('storj_list_files')
+          
+          // Enrichir avec les métadonnées de l'index local
+          const enrichedFiles: FileInfo[] = await Promise.all(
+            storjFiles.map(async (file) => {
+              try {
+                // Récupère les métadonnées depuis l'index local si disponibles
+                const localFile = await invoke<{ id: string; logical_path: string; encrypted_size: number } | null>('index_get_file', {
+                  fileId: file.uuid,
+                })
+                
+                return {
+                  uuid: file.uuid,
+                  logical_path: localFile?.logical_path || file.logical_path,
+                  encrypted_size: localFile?.encrypted_size || file.encrypted_size || 0,
+                  file_id: localFile?.id,
+                } as FileInfo
+              } catch {
+                return {
+                  uuid: file.uuid,
+                  logical_path: file.logical_path,
+                  encrypted_size: file.encrypted_size || 0,
+                } as FileInfo
+              }
+            })
+          )
+          
+          setFiles(enrichedFiles)
+          if (attempts > 1) {
+            setStatus({ type: 'success', message: `✅ Fichiers chargés avec succès (tentative ${attempts})` })
+          } else {
+            // Réinitialise le statut après un chargement réussi silencieux
+            setTimeout(() => setStatus(null), 2000)
+          }
+          return
+        } catch (e) {
+          const errorMsg = e instanceof Error ? e.message : String(e)
+          
+          if (attempts >= maxAttempts) {
+            // Dernière tentative échouée
+            setStatus({ 
+              type: 'error', 
+              message: `Erreur lors du chargement des fichiers après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Vérifie que Storj est configuré\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+            })
+            break
+          } else {
+            // Continue avec le retry
+            console.warn(`Tentative ${attempts} échouée, nouvelle tentative...`, errorMsg)
+          }
+        }
+      }
     } finally {
+      // S'assure que isLoading est toujours réinitialisé
       setIsLoading(false)
     }
   }
 
-  // Upload d'un fichier (sélection ou drag & drop)
+  // Upload d'un fichier (sélection ou drag & drop) avec retry
   async function handleFileUpload(file: File) {
     if (!storjConfigured) {
       setStatus({ type: 'error', message: 'Storj n\'est pas configuré. Connecte-toi à Wayne.' })
@@ -147,38 +182,67 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     }
 
     setIsUploading(true)
-    setStatus(null)
+    setStatus({ type: 'info', message: `📤 Préparation de "${file.name}"...` })
 
-    try {
-      // Lit le fichier
-      const fileData = await file.arrayBuffer()
-      const fileArray = Array.from(new Uint8Array(fileData))
+    let attempts = 0
+    const maxAttempts = 3
 
-      // Génère automatiquement le chemin logique depuis le nom du fichier
-      const logicalPath = `/${file.name}`
+    while (attempts < maxAttempts) {
+      try {
+        attempts++
+        
+        if (attempts > 1) {
+          setStatus({ type: 'info', message: `🔄 Nouvelle tentative d'upload (${attempts}/${maxAttempts})...` })
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
+        } else {
+          setStatus({ type: 'info', message: `📤 Lecture du fichier "${file.name}"...` })
+        }
 
-      // Chiffre le fichier
-      const encrypted = await invoke<number[]>('storage_encrypt_file', {
-        data: fileArray,
-        logicalPath: logicalPath,
-      })
+        // Lit le fichier
+        const fileData = await file.arrayBuffer()
+        const fileArray = Array.from(new Uint8Array(fileData))
 
-      // Upload vers Storj (synchronise automatiquement avec l'index local)
-      await invoke<string>('storj_upload_file', {
-        encryptedData: encrypted,
-        logicalPath: logicalPath,
-      })
+        // Génère automatiquement le chemin logique depuis le nom du fichier
+        const logicalPath = `/${file.name}`
 
-      setStatus({ type: 'success', message: `✅ Fichier "${file.name}" uploadé avec succès` })
-      
-      // Recharge la liste des fichiers
-      await loadFiles()
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e)
-      setStatus({ type: 'error', message: `Erreur lors de l'upload: ${errorMsg}` })
-    } finally {
-      setIsUploading(false)
+        setStatus({ type: 'info', message: `🔐 Chiffrement de "${file.name}"...` })
+
+        // Chiffre le fichier
+        const encrypted = await invoke<number[]>('storage_encrypt_file', {
+          data: fileArray,
+          logicalPath: logicalPath,
+        })
+
+        setStatus({ type: 'info', message: `☁️ Upload de "${file.name}" vers Storj...` })
+
+        // Upload vers Storj (synchronise automatiquement avec l'index local)
+        await invoke<string>('storj_upload_file', {
+          encryptedData: encrypted,
+          logicalPath: logicalPath,
+        })
+
+        setStatus({ type: 'success', message: `✅ Fichier "${file.name}" uploadé avec succès` })
+        
+        // Recharge la liste des fichiers
+        await loadFiles()
+        return
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e)
+        
+        if (attempts >= maxAttempts) {
+          // Dernière tentative échouée
+          setStatus({ 
+            type: 'error', 
+            message: `Erreur lors de l'upload de "${file.name}" après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Le fichier est peut-être trop volumineux\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+          })
+        } else {
+          // Continue avec le retry
+          console.warn(`Tentative ${attempts} d'upload échouée, nouvelle tentative...`, errorMsg)
+        }
+      }
     }
+    
+    setIsUploading(false)
   }
 
   // Gestion du drag & drop
@@ -252,7 +316,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     }
   }
 
-  // Téléchargement d'un fichier
+  // Téléchargement d'un fichier avec retry
   async function handleDownload(file: FileInfo) {
     if (!file.logical_path) {
       setStatus({ type: 'error', message: 'Chemin logique non disponible pour ce fichier.' })
@@ -262,69 +326,122 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     setIsLoading(true)
     setStatus(null)
 
-    try {
-      // Télécharge depuis Storj
-      const encryptedData = await invoke<number[]>('storj_download_file_by_path', {
-        logicalPath: file.logical_path,
-      })
+    const fileName = file.logical_path.split('/').pop() || 'fichier'
+    let attempts = 0
+    const maxAttempts = 3
 
-      // Déchiffre le fichier
-      const decrypted = await invoke<number[]>('storage_decrypt_file', {
-        encryptedData: encryptedData,
-        logicalPath: file.logical_path,
-      })
+    while (attempts < maxAttempts) {
+      try {
+        attempts++
+        
+        if (attempts > 1) {
+          setStatus({ type: 'info', message: `🔄 Nouvelle tentative de téléchargement (${attempts}/${maxAttempts})...` })
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
+        } else {
+          setStatus({ type: 'info', message: `📥 Téléchargement de "${fileName}" depuis Storj...` })
+        }
 
-      // Extrait le nom du fichier depuis le chemin logique
-      const fileName = file.logical_path.split('/').pop() || 'fichier_dechiffre'
+        // Télécharge depuis Storj
+        const encryptedData = await invoke<number[]>('storj_download_file_by_path', {
+          logicalPath: file.logical_path,
+        })
 
-      // Sauvegarde le fichier
-      const savedPath = await invoke<string>('save_decrypted_file', {
-        data: decrypted,
-        suggestedName: fileName,
-      })
+        setStatus({ type: 'info', message: `🔓 Déchiffrement de "${fileName}"...` })
 
-      setStatus({ type: 'success', message: `✅ Fichier téléchargé : ${savedPath}` })
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e)
-      setStatus({ type: 'error', message: `Erreur lors du téléchargement: ${errorMsg}` })
-    } finally {
-      setIsLoading(false)
+        // Déchiffre le fichier
+        const decrypted = await invoke<number[]>('storage_decrypt_file', {
+          encryptedData: encryptedData,
+          logicalPath: file.logical_path,
+        })
+
+        setStatus({ type: 'info', message: `💾 Sauvegarde de "${fileName}"...` })
+
+        // Sauvegarde le fichier
+        const savedPath = await invoke<string>('save_decrypted_file', {
+          data: decrypted,
+          suggestedName: fileName,
+        })
+
+        setStatus({ type: 'success', message: `✅ Fichier téléchargé : ${savedPath}` })
+        return
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e)
+        
+        if (attempts >= maxAttempts) {
+          // Dernière tentative échouée
+          setStatus({ 
+            type: 'error', 
+            message: `Erreur lors du téléchargement de "${fileName}" après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Le fichier peut être corrompu\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+          })
+        } else {
+          // Continue avec le retry
+          console.warn(`Tentative ${attempts} de téléchargement échouée, nouvelle tentative...`, errorMsg)
+        }
+      }
     }
+    
+    setIsLoading(false)
   }
 
-  // Suppression d'un fichier
+  // Suppression d'un fichier avec retry
   async function handleDelete(file: FileInfo) {
-    if (!confirm(`Es-tu sûr de vouloir supprimer "${file.logical_path || file.uuid}" ?`)) {
+    const fileName = file.logical_path?.split('/').pop() || file.uuid
+    if (!confirm(`Es-tu sûr de vouloir supprimer "${fileName}" ?`)) {
       return
     }
 
     setIsLoading(true)
     setStatus(null)
 
-    try {
-      // Convertit l'UUID en bytes
-      const uuidNormalized = file.uuid.replace(/-/g, '').toLowerCase()
-      const uuidBytes = uuidNormalized.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-      
-      if (uuidBytes.length !== 16) {
-        throw new Error('UUID invalide')
+    let attempts = 0
+    const maxAttempts = 3
+
+    while (attempts < maxAttempts) {
+      try {
+        attempts++
+        
+        if (attempts > 1) {
+          setStatus({ type: 'info', message: `🔄 Nouvelle tentative de suppression (${attempts}/${maxAttempts})...` })
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempts))
+        } else {
+          setStatus({ type: 'info', message: `🗑️ Suppression de "${fileName}"...` })
+        }
+
+        // Convertit l'UUID en bytes
+        const uuidNormalized = file.uuid.replace(/-/g, '').toLowerCase()
+        const uuidBytes = uuidNormalized.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+        
+        if (uuidBytes.length !== 16) {
+          throw new Error('UUID invalide')
+        }
+
+        // Supprime de Storj (synchronise automatiquement avec l'index local)
+        await invoke('storj_delete_file', {
+          fileUuid: uuidBytes,
+        })
+
+        setStatus({ type: 'success', message: `✅ Fichier "${fileName}" supprimé avec succès` })
+        
+        // Recharge la liste des fichiers
+        await loadFiles()
+        return
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e)
+        
+        if (attempts >= maxAttempts) {
+          // Dernière tentative échouée
+          setStatus({ 
+            type: 'error', 
+            message: `Erreur lors de la suppression de "${fileName}" après ${maxAttempts} tentatives.\n\n💡 Suggestions :\n• Vérifie ta connexion Internet\n• Réessaie dans quelques instants\n\nErreur : ${errorMsg}` 
+          })
+        } else {
+          // Continue avec le retry
+          console.warn(`Tentative ${attempts} de suppression échouée, nouvelle tentative...`, errorMsg)
+        }
       }
-
-      // Supprime de Storj (synchronise automatiquement avec l'index local)
-      await invoke('storj_delete_file', {
-        fileUuid: uuidBytes,
-      })
-
-      setStatus({ type: 'success', message: `✅ Fichier supprimé avec succès` })
-      
-      // Recharge la liste des fichiers
-      await loadFiles()
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e)
-      setStatus({ type: 'error', message: `Erreur lors de la suppression: ${errorMsg}` })
-    } finally {
-      setIsLoading(false)
     }
+    
+    setIsLoading(false)
   }
 
   // Obtient l'icône du type de fichier

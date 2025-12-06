@@ -17,6 +17,7 @@ import type {
   ChangePasswordRequest,
   ChangePasswordResponse,
 } from './wayne_dto'
+import { withRetry, withTimeout } from './utils/retry'
 
 // Client HTTP pour communiquer avec le Control Plane "Wayne".
 // Gère l'authentification et la gestion des enveloppes de clés (MKEK).
@@ -33,6 +34,8 @@ export class WayneClient {
   private accessToken: string | null = null
   private refreshToken: string | null = null
   private readonly storageKey = 'wayne_refresh_token'
+  private readonly requestTimeoutMs: number = 30000 // 30 secondes par défaut
+  private readonly maxRetries: number = 3
 
   constructor(config: WayneClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '') // Enlève le slash final
@@ -93,48 +96,114 @@ export class WayneClient {
     return headers
   }
 
-  // Gère les erreurs HTTP et retourne un message d'erreur lisible.
-  private async handleError(response: Response): Promise<never> {
-    let errorMessage = `Wayne error: HTTP ${response.status}`
+  // Gère les erreurs HTTP et retourne un message d'erreur lisible avec suggestions.
+  private async handleError(response: Response, operation: string): Promise<never> {
+    let errorMessage = `Erreur ${operation}: HTTP ${response.status}`
+    let suggestions: string[] = []
+
     try {
       const errorData = (await response.json()) as WayneErrorResponse
       errorMessage = errorData.message || errorData.error || errorMessage
     } catch {
       // Si la réponse n'est pas du JSON, on utilise le message par défaut
     }
-    throw new Error(errorMessage)
+
+    // Ajoute des suggestions selon le code d'erreur
+    if (response.status === 401) {
+      suggestions.push('Vérifie que tu es bien connecté')
+      suggestions.push('Réessaie de te connecter')
+    } else if (response.status === 403) {
+      suggestions.push('Tu n\'as pas les permissions nécessaires')
+      suggestions.push('Contacte l\'administrateur si le problème persiste')
+    } else if (response.status === 404) {
+      suggestions.push('La ressource demandée n\'existe pas')
+      suggestions.push('Vérifie que l\'URL est correcte')
+    } else if (response.status >= 500) {
+      suggestions.push('Le serveur rencontre un problème temporaire')
+      suggestions.push('Réessaie dans quelques instants')
+      suggestions.push('Si le problème persiste, contacte le support')
+    }
+
+    const fullMessage = suggestions.length > 0
+      ? `${errorMessage}\n\n💡 Suggestions :\n${suggestions.map(s => `• ${s}`).join('\n')}`
+      : errorMessage
+
+    const error = new Error(fullMessage) as Error & { status?: number }
+    error.status = response.status
+    throw error
   }
 
-  // Gère les erreurs réseau (DNS, SSL, timeout, etc.)
+  // Gère les erreurs réseau (DNS, SSL, timeout, etc.) avec suggestions.
   private handleNetworkError(error: unknown, operation: string): never {
     if (error instanceof TypeError) {
       // Erreur réseau (DNS, SSL, connexion refusée, etc.)
       if (error.message.includes('fetch') || error.message.includes('Failed to fetch') || error.message.includes('Load failed')) {
         throw new Error(
-          `Impossible de se connecter au serveur Wayne (${this.baseUrl}). ` +
-          `Vérifie que :\n` +
-          `1. L'URL est correcte\n` +
-          `2. Le serveur est accessible\n` +
-          `3. Le DNS est propagé (peut prendre jusqu'à 48h)\n` +
-          `4. Le certificat SSL est valide`
+          `Impossible de se connecter au serveur Wayne (${this.baseUrl}).\n\n` +
+          `💡 Vérifie que :\n` +
+          `• L'URL est correcte (${this.baseUrl})\n` +
+          `• Le serveur est accessible et en ligne\n` +
+          `• Le DNS est propagé (peut prendre jusqu'à 48h)\n` +
+          `• Le certificat SSL est valide\n` +
+          `• Tu es connecté à Internet\n\n` +
+          `Si le problème persiste, réessaie dans quelques instants.`
         )
       }
     }
+
+    // Erreur de timeout
+    if (error instanceof Error && error.message.includes('timed out')) {
+      throw new Error(
+        `L'opération "${operation}" a pris trop de temps.\n\n` +
+        `💡 Suggestions :\n` +
+        `• Vérifie ta connexion Internet\n` +
+        `• Le serveur peut être surchargé, réessaie plus tard\n` +
+        `• Si le problème persiste, contacte le support`
+      )
+    }
+
     // Réutilise l'erreur originale si ce n'est pas une erreur réseau connue
     throw error
+  }
+
+  // Exécute une requête fetch avec retry et timeout
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    operation: string
+  ): Promise<Response> {
+    return withRetry(
+      async () => {
+        const response = await withTimeout(
+          fetch(url, options),
+          this.requestTimeoutMs,
+          `Timeout lors de l'opération "${operation}"`
+        )
+        return response
+      },
+      {
+        maxRetries: this.maxRetries,
+        initialDelayMs: 1000,
+        maxDelayMs: 10000,
+      }
+    )
   }
 
   // Inscription d'un nouvel utilisateur.
   async register(request: RegisterRequest): Promise<RegisterResponse> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/register`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/auth/register`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(request),
+        },
+        'inscription'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'inscription')
       }
 
       const registerResponse = (await response.json()) as RegisterResponse
@@ -149,21 +218,25 @@ export class WayneClient {
       }
       return registerResponse
     } catch (error) {
-      this.handleNetworkError(error, 'register')
+      this.handleNetworkError(error, 'inscription')
     }
   }
 
   // Connexion d'un utilisateur existant.
   async login(request: LoginRequest): Promise<LoginResponse> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/login`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/auth/login`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(request),
+        },
+        'connexion'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'connexion')
       }
 
       const loginResponse = (await response.json()) as LoginResponse
@@ -178,7 +251,7 @@ export class WayneClient {
       }
       return loginResponse
     } catch (error) {
-      this.handleNetworkError(error, 'login')
+      this.handleNetworkError(error, 'connexion')
     }
   }
 
@@ -191,19 +264,23 @@ export class WayneClient {
     try {
       const body: CreateKeyEnvelopeRequest = { envelope }
 
-      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(body),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/key-envelopes`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(body),
+        },
+        'sauvegarde de l\'enveloppe de clés'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'sauvegarde de l\'enveloppe de clés')
       }
 
       return (await response.json()) as CreateKeyEnvelopeResponse
     } catch (error) {
-      this.handleNetworkError(error, 'saveKeyEnvelope')
+      this.handleNetworkError(error, 'sauvegarde de l\'enveloppe de clés')
     }
   }
 
@@ -214,18 +291,22 @@ export class WayneClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/${envelopeId}`, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/key-envelopes/${envelopeId}`,
+        {
+          method: 'GET',
+          headers: this.getHeaders(),
+        },
+        'récupération de l\'enveloppe de clés'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'récupération de l\'enveloppe de clés')
       }
 
       return (await response.json()) as GetKeyEnvelopeResponse
     } catch (error) {
-      this.handleNetworkError(error, 'getKeyEnvelope')
+      this.handleNetworkError(error, 'récupération de l\'enveloppe de clés')
     }
   }
 
@@ -236,18 +317,22 @@ export class WayneClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/key-envelopes/me`, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/key-envelopes/me`,
+        {
+          method: 'GET',
+          headers: this.getHeaders(),
+        },
+        'récupération de l\'enveloppe de clés'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'récupération de l\'enveloppe de clés')
       }
 
       return (await response.json()) as GetKeyEnvelopeResponse
     } catch (error) {
-      this.handleNetworkError(error, 'getMyKeyEnvelope')
+      this.handleNetworkError(error, 'récupération de l\'enveloppe de clés')
     }
   }
 
@@ -258,18 +343,22 @@ export class WayneClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/storj-config/me`, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/storj-config/me`,
+        {
+          method: 'GET',
+          headers: this.getHeaders(),
+        },
+        'récupération de la configuration Storj'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'récupération de la configuration Storj')
       }
 
       return (await response.json()) as StorjConfigDto
     } catch (error) {
-      this.handleNetworkError(error, 'getMyStorjConfig')
+      this.handleNetworkError(error, 'récupération de la configuration Storj')
     }
   }
 
@@ -280,18 +369,22 @@ export class WayneClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/storj-config/create`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/storj-config/create`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+        },
+        'création du bucket Storj'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'création du bucket Storj')
       }
 
       return (await response.json()) as CreateStorjBucketResponse
     } catch (error) {
-      this.handleNetworkError(error, 'createStorjBucket')
+      this.handleNetworkError(error, 'création du bucket Storj')
     }
   }
 
@@ -306,13 +399,17 @@ export class WayneClient {
         refresh_token: this.refreshToken,
       }
 
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/auth/refresh`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(request),
         },
-        body: JSON.stringify(request),
-      })
+        'rafraîchissement du token'
+      )
 
       if (!response.ok) {
         // Si le refresh token est invalide, on nettoie tout
@@ -320,14 +417,14 @@ export class WayneClient {
           this.clearAccessToken()
           this.clearRefreshToken()
         }
-        await this.handleError(response)
+        await this.handleError(response, 'rafraîchissement du token')
       }
 
       const refreshResponse = (await response.json()) as RefreshTokenResponse
       this.setAccessToken(refreshResponse.access_token)
       return refreshResponse.access_token
     } catch (error) {
-      this.handleNetworkError(error, 'refreshAccessToken')
+      this.handleNetworkError(error, 'rafraîchissement du token')
     }
   }
 
@@ -381,14 +478,18 @@ export class WayneClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/change-password`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-      })
+      const response = await this.fetchWithRetry(
+        `${this.baseUrl}/api/v1/auth/change-password`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(request),
+        },
+        'changement de mot de passe'
+      )
 
       if (!response.ok) {
-        await this.handleError(response)
+        await this.handleError(response, 'changement de mot de passe')
       }
 
       const changePasswordResponse = (await response.json()) as ChangePasswordResponse
@@ -403,7 +504,7 @@ export class WayneClient {
       
       return changePasswordResponse
     } catch (error) {
-      this.handleNetworkError(error, 'changePassword')
+      this.handleNetworkError(error, 'changement de mot de passe')
     }
   }
 }
