@@ -1148,10 +1148,11 @@ pub fn run() {
             select_and_read_file_from_path,
             save_decrypted_file
         ])
-        .setup(|_app| {
+        .setup(|app| {
             // Les plugins sont initialisés via .plugin() dans le Builder
-            // Note: Le drag & drop HTML5 devrait fonctionner si le drag & drop natif de Tauri est désactivé
-            // Dans Tauri 2.0, cela se fait via la configuration de la fenêtre dans tauri.conf.json
+            // Note: Le drag & drop HTML5 ne fonctionne pas car Tauri intercepte les événements natifs
+            // Pour l'instant, on utilise uniquement le sélecteur de fichier
+            // TODO: Implémenter le drag & drop via l'API Tauri native quand elle sera disponible
             Ok(())
         })
         .run(tauri::generate_context!())
