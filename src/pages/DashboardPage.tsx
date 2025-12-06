@@ -1542,6 +1542,28 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
+                                handlePreview(file)
+                              }}
+                              disabled={isLoading || !file.logical_path}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: '1.2rem',
+                                padding: '0.5rem',
+                                borderRadius: '4px',
+                                transition: 'background 0.2s',
+                                opacity: (!file.logical_path || isLoading) ? 0.5 : 1,
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary, #f5f5f5)'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              title="Aperçu"
+                            >
+                              👁️
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
                                 handleRename(file)
                               }}
                               disabled={isLoading || !file.logical_path}
