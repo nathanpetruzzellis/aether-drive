@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Card } from '../components/Card'
 import { Button } from '../components/Button'
@@ -63,6 +63,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null)
   const [previewData, setPreviewData] = useState<{ data: Uint8Array; type: 'image' | 'text' | 'pdf' | 'unsupported' } | null>(null)
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null) // Pour nettoyer les Blob URLs
 
   // Ferme le menu contextuel avec la touche Escape
   useEffect(() => {
@@ -143,12 +144,24 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     loadStats()
   }, [wayneClient, files]) // Recharge les stats quand les fichiers changent
 
+  // Debounce pour la recherche (évite les recherches à chaque frappe)
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery)
+  
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery)
+    }, 300) // Attendre 300ms après la dernière frappe
+    
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
   // Note: Le drag & drop HTML5 ne fonctionne pas dans Tauri car Tauri intercepte les événements natifs
   // Pour l'instant, on utilise uniquement le sélecteur de fichier
   // TODO: Implémenter le drag & drop via l'API Tauri native quand elle sera disponible
 
   // Chargement des fichiers et dossiers depuis Storj (synchronisation) puis affichage depuis l'index local
-  async function loadFiles() {
+  // Utilise useCallback pour éviter les recréations inutiles
+  const loadFiles = useCallback(async () => {
     setIsLoading(true)
     setStatus(null)
     
@@ -212,7 +225,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       // S'assure que isLoading est toujours réinitialisé
       setIsLoading(false)
     }
-  }
+  }, [currentPath])
   
   // Navigation dans un dossier
   function navigateToFolder(folderPath: string) {
@@ -484,15 +497,47 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
       }
 
       setPreviewData({ data: dataArray, type: fileType })
+      
+      // Crée une Blob URL pour les images et PDF
+      if (fileType === 'image' || fileType === 'pdf') {
+        const blob = new Blob([dataArray], { type: fileType === 'image' ? 'image/*' : 'application/pdf' })
+        const blobUrl = URL.createObjectURL(blob)
+        setPreviewBlobUrl(blobUrl)
+      }
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e)
       setStatus({ type: 'error', message: `Erreur lors de l'aperçu: ${errorMsg}` })
       setShowPreview(false)
       setPreviewFile(null)
       setPreviewData(null)
+      // Nettoie la Blob URL si elle existe
+      if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl)
+        setPreviewBlobUrl(null)
+      }
     } finally {
       setIsLoadingPreview(false)
     }
+  }
+
+  // Nettoie les Blob URLs quand le modal se ferme
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl)
+      }
+    }
+  }, [previewBlobUrl])
+
+  // Nettoie les Blob URLs quand on ferme le modal
+  function closePreview() {
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl)
+      setPreviewBlobUrl(null)
+    }
+    setShowPreview(false)
+    setPreviewFile(null)
+    setPreviewData(null)
   }
 
   // Formate la date de suppression
@@ -959,13 +1004,13 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     return 'other'
   }
 
-  // Filtre et trie les fichiers
-  const filteredAndSortedFiles = (() => {
+  // Filtre et trie les fichiers (memoized pour éviter les recalculs inutiles)
+  const filteredAndSortedFiles = useMemo(() => {
     let result = [...files]
 
-    // Filtrage par recherche
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
+    // Filtrage par recherche (utilise la version debounced)
+    if (debouncedSearchQuery.trim()) {
+      const query = debouncedSearchQuery.toLowerCase()
       result = result.filter(file => {
         const fileName = file.logical_path?.split('/').pop() || file.uuid
         return fileName.toLowerCase().includes(query)
@@ -998,7 +1043,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
     })
 
     return result
-  })()
+  }, [files, debouncedSearchQuery, fileTypeFilter, sortBy, sortOrder])
 
   return (
     <div className="dashboard-page">
@@ -1440,7 +1485,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
               <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔍</div>
               <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Aucun fichier trouvé</p>
               <p style={{ fontSize: '0.9rem' }}>
-                {searchQuery ? `Aucun fichier ne correspond à "${searchQuery}"` : `Aucun fichier de type "${fileTypeFilter}"`}
+                {debouncedSearchQuery ? `Aucun fichier ne correspond à "${debouncedSearchQuery}"` : `Aucun fichier de type "${fileTypeFilter}"`}
               </p>
               <Button
                 variant="secondary"
@@ -2109,9 +2154,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              setShowPreview(false)
-              setPreviewFile(null)
-              setPreviewData(null)
+              closePreview()
             }
           }}
         >
@@ -2153,11 +2196,7 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                   </button>
                 )}
                 <button
-                  onClick={() => {
-                    setShowPreview(false)
-                    setPreviewFile(null)
-                    setPreviewData(null)
-                  }}
+                  onClick={closePreview}
                   style={{
                     background: 'var(--bg-secondary, #f5f5f5)',
                     border: 'none',
@@ -2181,9 +2220,9 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                 </div>
               ) : previewData ? (
                 <>
-                  {previewData.type === 'image' && (
+                  {previewData.type === 'image' && previewBlobUrl && (
                     <img
-                      src={URL.createObjectURL(new Blob([previewData.data]))}
+                      src={previewBlobUrl}
                       alt={previewFile.logical_path?.split('/').pop() || 'Aperçu'}
                       style={{
                         maxWidth: '100%',
@@ -2209,9 +2248,9 @@ export function DashboardPage({ wayneClient, onLogout }: DashboardPageProps) {
                       {new TextDecoder('utf-8').decode(previewData.data)}
                     </pre>
                   )}
-                  {previewData.type === 'pdf' && (
+                  {previewData.type === 'pdf' && previewBlobUrl && (
                     <iframe
-                      src={URL.createObjectURL(new Blob([previewData.data], { type: 'application/pdf' }))}
+                      src={previewBlobUrl}
                       style={{
                         width: '100%',
                         height: '70vh',

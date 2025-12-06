@@ -133,6 +133,12 @@ impl SqlCipherIndex {
             [],
         )?;
         
+        // Crée un index sur logical_path pour accélérer les recherches par chemin
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_logical_path ON file_index(logical_path)",
+            [],
+        )?;
+        
         // Crée la table pour stocker le hash Merkle de l'index.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS index_metadata (
@@ -209,6 +215,12 @@ impl SqlCipherIndex {
                 encrypted_size INTEGER NOT NULL,
                 hmac BLOB NOT NULL
             )",
+            [],
+        )?;
+        
+        // Crée un index sur logical_path pour accélérer les recherches par chemin
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_logical_path ON file_index(logical_path)",
             [],
         )?;
         

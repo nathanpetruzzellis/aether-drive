@@ -1119,18 +1119,11 @@ async fn storj_list_files(
         .map_err(|e| format!("Failed to list files from Storj: {}", e))?;
     
     log::info!("Listed {} files from Storj", keys.len());
-    for key in &keys {
-        log::info!("Storj key format: {}", key);
-    }
     
     // Normalise les UUIDs Storj (enlève les tirets) pour correspondre au format de l'index local
     let storj_uuids_normalized: std::collections::HashSet<String> = keys
         .iter()
-        .map(|uuid| {
-            let normalized = uuid.replace("-", "").to_lowercase();
-            log::info!("Normalized UUID: {} -> {}", uuid, normalized);
-            normalized
-        })
+        .map(|uuid| uuid.replace("-", "").to_lowercase())
         .collect();
     
     // Pour chaque UUID, essaie de trouver les métadonnées dans l'index local
@@ -1142,10 +1135,6 @@ async fn storj_list_files(
             // Nettoyage de l'index local : supprime les fichiers qui n'existent plus dans Storj
             let all_local_files = index.list_all().ok().unwrap_or_default();
             log::info!("Local index contains {} files", all_local_files.len());
-            
-            for (file_id, _) in &all_local_files {
-                log::info!("Checking local file_id: {}", file_id);
-            }
             
             for (file_id, _) in all_local_files {
                 if !storj_uuids_normalized.contains(&file_id) {
@@ -1162,90 +1151,14 @@ async fn storj_list_files(
                 let uuid_normalized = uuid_from_storj.replace("-", "").to_lowercase();
                 
                 // Essaie de trouver le fichier dans l'index local avec l'UUID normalisé
-                log::info!("Looking for file in local index: normalized={}, original={}", uuid_normalized, uuid_from_storj);
                 let mut metadata = index.get(&uuid_normalized).ok().flatten();
                 
-                if metadata.is_some() {
-                    log::info!("Found file {} in local index", uuid_normalized);
-                } else {
-                    log::info!("File {} not found in local index", uuid_normalized);
-                }
-                
-                // Si le fichier n'est pas dans l'index local, essaie de le télécharger depuis Storj
-                // pour extraire les métadonnées depuis le fichier Aether lui-même
+                // Si le fichier n'est pas dans l'index local, on skip la synchronisation automatique
+                // pour éviter de télécharger tous les fichiers (très coûteux en bande passante)
+                // L'utilisateur peut forcer une synchronisation manuelle si nécessaire
                 if metadata.is_none() {
-                    log::info!("File {} not found in local index, attempting to sync from Storj (original UUID: {})", uuid_normalized, uuid_from_storj);
-                    
-                    // Télécharge le fichier depuis Storj pour extraire les métadonnées
-                    // Essaie d'abord avec l'UUID normalisé (sans tirets), puis avec le format original (avec tirets)
-                    let client_for_sync = {
-                        let client_guard = state.storj_client.lock().await;
-                        client_guard.clone()
-                            .ok_or_else(|| "Storj client not configured".to_string())?
-                    };
-                    
-                    // Essaie d'abord avec l'UUID normalisé (sans tirets) - format utilisé lors de l'upload
-                    log::info!("Attempting download with normalized UUID: {}", uuid_normalized);
-                    let mut download_result = client_for_sync.download_file(&uuid_normalized).await;
-                    
-                    // Si ça échoue, essaie avec le format original (avec tirets) - format retourné par Storj
-                    if download_result.is_err() {
-                        log::info!("Download with normalized UUID failed, trying with original UUID format: {}", uuid_from_storj);
-                        download_result = client_for_sync.download_file(&uuid_from_storj).await;
-                    }
-                    
-                    match download_result {
-                        Ok(encrypted_data) => {
-                            log::info!("Successfully downloaded file {} from Storj, size: {} bytes", uuid_normalized, encrypted_data.len());
-                            
-                            // Vérifie que le fichier est assez grand pour être un fichier Aether valide
-                            // Un fichier Aether doit avoir au minimum : Magic(4) + Version(1) + CipherID(1) + UUID(16) + Salt(32) + HMAC(32) + Nonce(24) + CiphertextLen(8) = 118 bytes
-                            const MIN_AETHER_SIZE: usize = 118;
-                            if encrypted_data.len() < MIN_AETHER_SIZE {
-                                log::warn!("⚠️ File {} from Storj is too small ({} bytes) to be a valid Aether file (minimum {} bytes). Skipping sync.", 
-                                    uuid_normalized, encrypted_data.len(), MIN_AETHER_SIZE);
-                            } else {
-                                // Vérifie le Magic Number "AETH"
-                                if encrypted_data.len() >= 4 && &encrypted_data[0..4] != b"AETH" {
-                                    log::warn!("⚠️ File {} from Storj does not have Aether magic number. First 4 bytes: {:?}. Skipping sync.", 
-                                        uuid_normalized, &encrypted_data[0..4.min(encrypted_data.len())]);
-                                } else {
-                                    // Parse le fichier Aether pour extraire les métadonnées
-                                    match AetherFile::from_bytes(&encrypted_data) {
-                                        Ok(_aether_file) => {
-                                            log::info!("Successfully parsed Aether file {}", uuid_normalized);
-                                            
-                                            // Le fichier Aether contient le chemin logique dans l'AAD
-                                            // Mais on ne peut pas le récupérer sans déchiffrer
-                                            // Pour l'instant, on crée une entrée avec un chemin logique générique
-                                            // L'utilisateur devra le corriger manuellement ou re-uploader le fichier
-                                            let sync_metadata = FileMetadata {
-                                                logical_path: format!("/storj/{}", uuid_normalized), // Chemin générique
-                                                encrypted_size: encrypted_data.len() as u64,
-                                            };
-                                            
-                                            log::info!("Attempting to upsert file {} to local index", uuid_normalized);
-                                            match index.upsert(uuid_normalized.clone(), sync_metadata.clone()) {
-                                                Ok(_) => {
-                                                    log::info!("✅ File {} successfully synced to local index from Storj", uuid_normalized);
-                                                    metadata = Some(sync_metadata);
-                                                }
-                                                Err(e) => {
-                                                    log::error!("❌ Failed to sync file {} to local index: {}", uuid_normalized, e);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::warn!("⚠️ Failed to parse Aether file {} from Storj: {}. File may not be in Aether format or may be corrupted.", uuid_normalized, e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("❌ Failed to download file {} from Storj for sync: {}", uuid_normalized, e);
-                        }
-                    }
+                    log::warn!("⚠️ File {} not found in local index, skipping auto-sync (too expensive). Original UUID: {}", uuid_normalized, uuid_from_storj);
+                    // On continue sans télécharger le fichier pour économiser la bande passante
                 }
                 
                 files_with_metadata.push(StorjFileInfo {
